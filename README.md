@@ -15,28 +15,29 @@ See the [usage guide](docs/USAGE.md) for configuration, output and save consider
 
 **Default options:** Resolve leveled-list conflicts is off; Allow new material lists for specialized enchanted distribution is on. These choices can be changed in the interface, and existing saved profile choices are preserved.
 
-## Building from source
+## Building the exe
 
-Use Windows and the .NET 10 SDK selected by `global.json`. The app uses WPF and Windows Forms. NuGet restore requires network access. A separate .NET runtime installation is not required for the self-contained published app.
+You need Windows x64, the .NET SDK version named in `global.json` (10.0.400 or a later 10.0.4xx patch) and network access for NuGet restore.
 
 From the repository root:
 
 ```powershell
-dotnet restore src/XEnchantmentPatcher.csproj --locked-mode
-dotnet build src/XEnchantmentPatcher.csproj -c Release --no-restore
+dotnet publish src/XEnchantmentPatcher.csproj -c Release -o out
 ```
+
+This writes `out/XEnchantmentPatcher.exe`, a single self-contained executable that needs no separate .NET runtime, and the `out/Champollion` folder it uses for script analysis. Keep that folder beside the exe, then add the exe to MO2 as described above. The license notices and docs are copied into `out/` as well.
 
 The committed Papyrus source/bytecode pairs and bundled Champollion files are required build inputs, not disposable build output.
 
-## Creating a release package
+## Creating a release package (maintainers)
 
-Use PowerShell 7 from a Git checkout with at least one commit. If you obtained these files without Git history, initialize and commit the repository before using the release packager.
+This builds the same exe and also assembles license notices, dependency sources and the matching source archive for distribution. Use PowerShell 7 from a Git checkout with at least one commit. If you obtained these files without Git history, initialize and commit the repository before using the release packager.
 
 ```powershell
 pwsh -File tools/package-release.ps1 -Destination artifacts/release-1.0.0
 ```
 
-The destination must be new. Packaging builds the application, verifies the restored dependency inventory, includes license notices and matching source, checks the executable's startup identity and verifies the resulting ZIP. Large upstream source archives are downloaded from pinned URLs and checked against SHA-256 hashes; they are excluded from Git.
+The destination must be new. Packaging builds the application, verifies the restored dependency inventory, includes license notices and matching source, checks the executable's startup identity and verifies the resulting ZIP. Large upstream source archives (about 290 MB) are downloaded from pinned URLs and checked against SHA-256 hashes; they are excluded from Git.
 
 The Nexus 1.0.0 download separates end-user files from source. Its matching `XEnchantmentPatcher-1.0.0-corresponding-source.zip` is provided as an asset on the [v1.0.0 release](https://github.com/ProxyNew/XEP/releases/tag/v1.0.0). It contains the exact XEP source/build inputs and third-party source archives, including Mutagen and Champollion. GitHub's automatically generated repository source ZIP alone does not contain those dependency archives.
 

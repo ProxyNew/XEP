@@ -1,0 +1,115 @@
+<Window x:Class="XEnchantmentPatcher.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="XEnchantmentPatcher" Width="1080" Height="650" MinWidth="850" MinHeight="550" WindowStartupLocation="CenterScreen">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,18">
+            <Button DockPanel.Dock="Right" Click="ToggleTheme" ToolTip="Switch light and dark theme" HorizontalAlignment="Right">
+                <StackPanel Orientation="Horizontal">
+                    <Path Width="16" Height="16" Stretch="Uniform" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.5" Data="M 12,6 A 6,6 0 1 0 12,18 A 6,6 0 1 0 12,6 M 12,0 L 12,3 M 12,21 L 12,24 M 0,12 L 3,12 M 21,12 L 24,12 M 3,3 L 5,5 M 19,19 L 21,21 M 3,21 L 5,19 M 19,5 L 21,3" />
+                    <Path Data="M 0,18 L 8,0" Stroke="{DynamicResource MutedBrush}" StrokeThickness="1" Margin="7,0" />
+                    <Path Width="16" Height="16" Stretch="Uniform" Stroke="{DynamicResource TextBrush}" StrokeThickness="1.5" Data="M 18,2 A 9,9 0 1 0 22,18 A 9,9 0 0 1 18,2" Margin="0,0,10,0" />
+                    <TextBlock Text="Theme" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+            <Button x:Name="ExportModSettingsButton" DockPanel.Dock="Right" Content="Export mod settings…" Click="ExportModSettings" Margin="0,0,12,0"
+                    ToolTip="Choose individual mods and export their configured rules and record overrides as a named JSON rules file to bundle in Data/XEnchantmentPatcher/. Shared options and local paths are excluded." />
+            <TextBlock Text="XEnchantmentPatcher" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" />
+        </DockPanel>
+        <Grid Grid.Row="1" Margin="0,0,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="95" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Profile" VerticalAlignment="Center" />
+            <TextBox x:Name="ProfileSelector" Grid.Column="1" Text="{Binding ProfileName, Mode=OneWay}" IsReadOnly="True" AutomationProperties.Name="Current profile" ToolTip="The active saved set of patching choices. Data and Output folders are shared by all profiles." />
+            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <Button x:Name="SelectProfileButton" Content="Browse.." Click="BrowseProfiles" Margin="10,0,0,0" ToolTip="Load another saved set of patching choices and rescan. Data and Output folders stay shared." />
+                <Button x:Name="NewProfileButton" Content="New…" Tag="New" Click="ManageProfile" Margin="8,0,0,0" ToolTip="Create and switch to a profile with application defaults. Data and Output folders stay shared." />
+                <Button x:Name="DuplicateProfileButton" Content="Duplicate…" Tag="Duplicate" Click="ManageProfile" Margin="8,0,0,0" ToolTip="Copy this profile's patching choices into a new profile without generation history, then switch to it. Data and Output folders stay shared." />
+            </StackPanel>
+        </Grid>
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="0" ClipToBounds="True">
+            <DockPanel>
+                <Border DockPanel.Dock="Top" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Background="{DynamicResource AlternateBrush}" CornerRadius="12,12,0,0" Padding="12,9">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="120" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Origins / Priority" FontWeight="SemiBold" />
+                        <TextBlock Grid.Column="1" Text="Enchantments" FontWeight="SemiBold" HorizontalAlignment="Right" />
+                    </Grid>
+                </Border>
+                <ListBox x:Name="ProviderList" ItemsSource="{Binding Providers}" BorderThickness="0" Margin="3" ScrollViewer.VerticalScrollBarVisibility="Auto" AllowDrop="True" PreviewMouseLeftButtonDown="ProviderListMouseDown" PreviewMouseMove="ProviderListMouseMove" DragOver="ProviderListDragOver" Drop="ProviderListDrop" ToolTip="An origin is the plugin where an enchantment record was first defined. An enchantment provider is an origin with usable enchanted equipment templates that XEP can use to create variants. Check origins to choose which enchantments are available, and drag rows to set their priority (highest first). Higher-priority origins are preferred for overlapping enchantment recommendations and equivalent templates.">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="0,7">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="120" />
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" Content="{Binding Plugin}" />
+                                    <TextBlock Grid.Column="1" Text="{Binding EnchantmentCount, StringFormat=N0}" HorizontalAlignment="Right" Margin="0,0,6,0" />
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Border>
+        <Expander x:Name="AdvancedOptionsExpander" Grid.Row="3" Header="Advanced options.." ExpandDirection="Right" HorizontalAlignment="Left" Margin="0,12,0,10">
+            <StackPanel Margin="12,0,0,0">
+                <CheckBox Content="Broader fallback for unmatched equipment" IsChecked="{Binding BroadUnmatchedDistribution}" Margin="0,0,0,8" ToolTip="Opt in to source-gated enchanted branches when exact material, type or slot matching is exhausted." />
+                <CheckBox Content="Resolve leveled-list conflicts" IsChecked="{Binding ResolveLeveledListConflicts}" Margin="0,0,0,8" ToolTip="Recover unaware omissions from ordinary equipment leveled lists. Enchanted provider structures and unrelated lists are excluded." />
+                <CheckBox Content="Keep undistributed variants in output" IsChecked="{Binding KeepUndistributedVariants}" ToolTip="Write valid variants without a safe loot destination. They remain absent from loot." />
+            </StackPanel>
+        </Expander>
+        <Button Grid.Row="4" Click="OpenReview" HorizontalContentAlignment="Stretch" Padding="18" ToolTip="Review plugin rules, equipment and enchantments.">
+            <StackPanel>
+                <TextBlock Text="Patch review" FontSize="21" FontWeight="SemiBold" />
+                <TextBlock Text="Choose plugin distribution rules, individual equipment and enchantments." TextWrapping="Wrap" Margin="0,10,0,8" Foreground="{DynamicResource MutedBrush}" />
+                <TextBlock Text="{Binding PreviewStateText}" FontWeight="SemiBold" TextWrapping="Wrap" />
+            </StackPanel>
+        </Button>
+        <StackPanel Grid.Row="5" Margin="0,12,0,0">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                <Button Click="Generate" Content="Generate Patch" Width="240" Padding="18,9" ToolTip="Calculate or reuse the exact preview, then write and validate patch files in the shared Output folder. Warnings or changed record identities require confirmation before writing." />
+            </StackPanel>
+            <TextBlock Text="{Binding SettingsSaveNotice}" Foreground="{DynamicResource ErrorBrush}" TextWrapping="Wrap" TextAlignment="Center" />
+        </StackPanel>
+        <Grid x:Name="MainRescanOverlay" Grid.RowSpan="6" Panel.ZIndex="100" Background="Transparent">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsBusyVisual}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsRescanning}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <Border Width="520" Style="{StaticResource PanelBorder}" Padding="28" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <ContentControl x:Name="MainBusyIconHost" Width="112" Height="112" HorizontalAlignment="Center" Margin="0,0,0,12" />
+                    <TextBlock Text="{Binding BusyTitle}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding Status}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,14" />
+                    <ProgressBar Value="{Binding OperationProgressPercent, Mode=OneWay, TargetNullValue=0}"
+                                 IsIndeterminate="{Binding IsOperationProgressUnknown, Mode=OneWay}"
+                                 AutomationProperties.Name="Operation progress" />
+                    <TextBlock Text="{Binding SettingsPersistenceHint}" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource MutedBrush}" Margin="0,16,0,0" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

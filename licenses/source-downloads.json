@@ -1,0 +1,117 @@
+[
+  {
+    "Archive": "sources/boost_1_80_0.tar.bz2",
+    "Url": "https://archives.boost.io/release/1.80.0/source/boost_1_80_0.tar.bz2",
+    "Sha256": "1E19565D82E43BC59209A168F5AC899D3BA471D55C7610C677D4CCF2C9C500C0"
+  },
+  {
+    "Archive": "sources/dotnet-runtime-f57e6dc747158ab7ade4e62a75a6750d16b771e8.zip",
+    "Url": "https://codeload.github.com/dotnet/runtime/zip/f57e6dc747158ab7ade4e62a75a6750d16b771e8",
+    "Sha256": "1FB3DD7B2B660317CF649917E064A73542D33BDE5DDB286BB0A2FFDFFBDD35A6"
+  },
+  {
+    "Archive": "sources/DynamicData-8db480674d0971c46e4ea872c74f3973e2496e2b.zip",
+    "Url": "https://codeload.github.com/reactivemarbles/DynamicData/zip/8db480674d0971c46e4ea872c74f3973e2496e2b",
+    "Sha256": "75F747DBC8083E8A6CBF17A957AD616359B1F00B4D4D6937ABBBDEA7BBCFE7B0"
+  },
+  {
+    "Archive": "sources/FluentResults-8b675de7e8b6e4c0921e95138c99e15fd52cde40.zip",
+    "Url": "https://codeload.github.com/altmann/FluentResults/zip/8b675de7e8b6e4c0921e95138c99e15fd52cde40",
+    "Sha256": "8E8344225658C41B4DD07381FD046207B03FE1556633C8F5C3727F612A26F373"
+  },
+  {
+    "Archive": "sources/GameFinder-efa23bd6d02ec07aa9fb1abe1025efafe3190d9f.zip",
+    "Url": "https://codeload.github.com/Noggog/GameFinder/zip/efa23bd6d02ec07aa9fb1abe1025efafe3190d9f",
+    "Sha256": "090A33CE82242C379632E6ED0499FDA9F2B68DAECC68E2F301C81508C49C13A8"
+  },
+  {
+    "Archive": "sources/ini-parser-b1beea584b23c65f7c9bcafd8ab9be62395f477a.zip",
+    "Url": "https://codeload.github.com/nano-byte/ini-parser/zip/b1beea584b23c65f7c9bcafd8ab9be62395f477a",
+    "Sha256": "8413FF1699505306E673C375F881404B06412ED9CE164C6DE2A84748DF86009B"
+  },
+  {
+    "Archive": "sources/K4os.Compression.LZ4-f5a25b7d72e2e41550fe20662597169ff11c3b60.zip",
+    "Url": "https://codeload.github.com/MiloszKrajewski/K4os.Compression.LZ4/zip/f5a25b7d72e2e41550fe20662597169ff11c3b60",
+    "Sha256": "3490CABE2233299B88927915930134E9A5401C5C96A4A550F0D895559A8C4F4E"
+  },
+  {
+    "Archive": "sources/K4os.Hash.xxHash-c36ef54edbd778c082cab04df7e42cb72a22d887.zip",
+    "Url": "https://codeload.github.com/MiloszKrajewski/K4os.Hash.xxHash/zip/c36ef54edbd778c082cab04df7e42cb72a22d887",
+    "Sha256": "D299E84EF519FCCFD9F37A224A0F627B69094DE917A4D56F0E6B5458C63B4F8A"
+  },
+  {
+    "Archive": "sources/Loqui-da23e9867105c91e855edf791a35386ef038f063.zip",
+    "Url": "https://codeload.github.com/Noggog/Loqui/zip/da23e9867105c91e855edf791a35386ef038f063",
+    "Sha256": "047E62A46683B9D35D17F4A43D416ACEE028E5E8A440BF32B53076E44B85D223"
+  },
+  {
+    "Archive": "sources/Mutagen-0188012c607ce8bb283d2704400d37737f089134.zip",
+    "Url": "https://codeload.github.com/Mutagen-Modding/Mutagen/zip/0188012c607ce8bb283d2704400d37737f089134",
+    "Sha256": "8228FD08D48CFA425FAB1F8495C8F7E8F1BF3495E427C4C56CE62C2A9E277B27"
+  },
+  {
+    "Archive": "sources/NexusMods.App.Meta-9c4844439c53f8b8b9f64fb707c91b469238b15e.zip",
+    "Url": "https://codeload.github.com/Nexus-Mods/NexusMods.App.Meta/zip/9c4844439c53f8b8b9f64fb707c91b469238b15e",
+    "Sha256": "CA2289AE68C67C92C0AE3EA6846E802183D9022D13D12ABE3E3880E6F3C95B84"
+  },
+  {
+    "Archive": "sources/NexusMods.Paths-99b62efd5af88b83a0bc9eba8b3607afe802bbed.zip",
+    "Url": "https://codeload.github.com/Nexus-Mods/NexusMods.Paths/zip/99b62efd5af88b83a0bc9eba8b3607afe802bbed",
+    "Sha256": "306003FE488FA5D08864F7970E1CB68A24E0937BFB320D4F4200AEAC2E749A8B"
+  },
+  {
+    "Archive": "sources/Noggog.CSharpExt-dc1558f85e7595bdbae20a18a57905c3a07add9d.zip",
+    "Url": "https://codeload.github.com/Noggog/CSharpExt/zip/dc1558f85e7595bdbae20a18a57905c3a07add9d",
+    "Sha256": "B3CBF8B916A0DA415881DBF5834252876AD0DBAE84C4AF7E6AFBBB43FB7CC7FF"
+  },
+  {
+    "Archive": "sources/OneOf-6e02dbe75d0f20f198c640d4c04190a85c5ac9e6.zip",
+    "Url": "https://codeload.github.com/mcintyre321/OneOf/zip/6e02dbe75d0f20f198c640d4c04190a85c5ac9e6",
+    "Sha256": "E44A7C0C721EEB2EDCC4CBF779D8DE39B274B0DEF6E1C1182C2453E76128D7B4"
+  },
+  {
+    "Archive": "sources/Reloaded.Memory-6bab99d723bf6f783d24ed0d489db28ea5d9e075.zip",
+    "Url": "https://codeload.github.com/Reloaded-Project/Reloaded.Memory/zip/6bab99d723bf6f783d24ed0d489db28ea5d9e075",
+    "Sha256": "18017B4C03384D5620A5813481B606391156C0F36B32175978E279E69F108A56"
+  },
+  {
+    "Archive": "sources/Reloaded.Project.Configurations-38db64b2a6c6952a66e1fe00cd344bc2f31c4b70.zip",
+    "Url": "https://codeload.github.com/Reloaded-Project/Reloaded.Project.Configurations/zip/38db64b2a6c6952a66e1fe00cd344bc2f31c4b70",
+    "Sha256": "EB85C59134E4A17701C7C1186DF13D82E308CE099F12D4BCD64E60C3A906882C"
+  },
+  {
+    "Archive": "sources/SharpZipLib-33f64eb0f28cdd2b084cb822fcc224c7c5aba553.zip",
+    "Url": "https://codeload.github.com/icsharpcode/SharpZipLib/zip/33f64eb0f28cdd2b084cb822fcc224c7c5aba553",
+    "Sha256": "DEE76DCEF0DC43C1F63661F2DF3E79EE4D2B9F0005158D3997BB3B6EB3E40E2F"
+  },
+  {
+    "Archive": "sources/StrongInject-6f3077c68b1ebd9c56663456efb67ef90886942e.zip",
+    "Url": "https://codeload.github.com/YairHalberstadt/stronginject/zip/6f3077c68b1ebd9c56663456efb67ef90886942e",
+    "Sha256": "F2127A42FD7D5D845311D7C215E5ABCA60063D9E8D354B76F815571E42783E4D"
+  },
+  {
+    "Archive": "sources/System.IO.Abstractions-a091ac7f9655f61aeaeb28baf452c1a96c546ba8.zip",
+    "Url": "https://codeload.github.com/TestableIO/System.IO.Abstractions/zip/a091ac7f9655f61aeaeb28baf452c1a96c546ba8",
+    "Sha256": "D83F81CAD0DECC037D6DB65F0065BE828150EE212A978D8DA6BB63B23DE58C5C"
+  },
+  {
+    "Archive": "sources/System.Reactive-f4da16f15a3cde97f178396ea6e3489cc893651f.zip",
+    "Url": "https://codeload.github.com/dotnet/reactive/zip/f4da16f15a3cde97f178396ea6e3489cc893651f",
+    "Sha256": "855C651AA5CD57E209F3A5F6876B11C193D7C49E4176155F87AA022496AF7DD2"
+  },
+  {
+    "Archive": "sources/Testably.Abstractions-1253c6bd6309cb15623fac09bd841e782bbca626.zip",
+    "Url": "https://codeload.github.com/Testably/Testably.Abstractions/zip/1253c6bd6309cb15623fac09bd841e782bbca626",
+    "Sha256": "40CA8BE3E9F702CA97E30BB9FC4F2730CC29111A2A9F56F9BE73353B47500FC0"
+  },
+  {
+    "Archive": "sources/TransparentValueObjects-ff32127019b0f53480f5e9c1867924b14138999c.zip",
+    "Url": "https://codeload.github.com/erri120/TransparentValueObjects/zip/ff32127019b0f53480f5e9c1867924b14138999c",
+    "Sha256": "C3A5053DE7F56750748039221423D6B8972D79919216A0EF8E72B047E56FD449"
+  },
+  {
+    "Archive": "sources/ValveKeyValue-c7d0dcce45a32123e376c30c6fb9a016d6ebf294.zip",
+    "Url": "https://codeload.github.com/ValveResourceFormat/ValveKeyValue/zip/c7d0dcce45a32123e376c30c6fb9a016d6ebf294",
+    "Sha256": "3F2AA72F6A6D9A72897E9F0F7FD2A8CAE609A00655364B0B091A0D36656AC5A8"
+  }
+]

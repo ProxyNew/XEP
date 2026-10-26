@@ -1,0 +1,3 @@
+# Runtime script sources are embedded, packaged and fingerprinted. Fixed LF keeps
+# generated output identical across checkouts regardless of core.autocrlf.
+src/Runtime/*.psc text eol=lf

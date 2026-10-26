@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "plugin": "ExampleGear.esp",
+      "items": [
+        {
+          "id": "guard-blades-in-guard-loot",
+          "requires": ["allowedDestinations"],
+          "records": ["000801:ExampleGear.esp"],
+          "allowedDestinations": ["000A00:ExampleGear.esp"],
+          "reason": "Guard blades belong only in the mod's guard loot."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,295 @@
+<Window x:Class="XEnchantmentPatcher.ReviewWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:XEnchantmentPatcher" Title="XEnchantmentPatcher — Review selections and output" Width="1440" Height="850" MinWidth="1150" MinHeight="620" WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="ChoiceHelp" TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+            <Setter Property="ToolTip" Value="{Binding Explanation}" />
+            <Setter Property="AutomationProperties.HelpText" Value="{Binding Explanation}" />
+        </Style>
+        <Style x:Key="NumericText" TargetType="TextBlock">
+            <Setter Property="HorizontalAlignment" Value="Right" />
+        </Style>
+        <Style x:Key="SymbolText" TargetType="TextBlock">
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="ToolTip" Value="{Binding RelativeSource={RelativeSource Self}, Path=Tag}" />
+        </Style>
+        <GroupStyle x:Key="PluginGroups">
+            <GroupStyle.ContainerStyle>
+                <Style TargetType="GroupItem">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="GroupItem">
+                                <local:ReviewGroupExpander x:Name="Expander" Style="{StaticResource {x:Type Expander}}" IsExpanded="False" Margin="0,2" HorizontalContentAlignment="Stretch">
+                                    <Expander.Header>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding ItemCount, StringFormat={} ({0})}" Margin="5,0,0,0" Foreground="{DynamicResource MutedBrush}" />
+                                        </StackPanel>
+                                    </Expander.Header>
+                                    <ItemsPresenter />
+                                </local:ReviewGroupExpander>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </GroupStyle.ContainerStyle>
+        </GroupStyle>
+    </Window.Resources>
+    <Grid Margin="16">
+        <TabControl x:Name="ReviewTabs">
+            <TabItem Header="Plugin distribution rules">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Batch rule:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <ComboBox x:Name="PluginBatchChoice" Width="210" DisplayMemberPath="Label" SelectionChanged="PluginBatchChoiceChanged" ItemContainerStyle="{StaticResource ChoiceHelp}" ToolTip="{Binding SelectedItem.Explanation, RelativeSource={RelativeSource Self}}" Margin="0,0,10,0" />
+                            <Button x:Name="ApplyPluginBatchButton" Content="Apply to selected" Click="ApplyPluginBatch" IsEnabled="False" ToolTip="Apply the chosen rule to highlighted plugin rows only. Hold Ctrl to select separate rows or Shift to select a range." ToolTipService.ShowOnDisabled="True" />
+                            <TextBlock x:Name="PluginBatchSelectionText" Text="0 plugins selected" VerticalAlignment="Center" Margin="12,0,0,0" />
+                        </StackPanel>
+                        <TextBlock x:Name="PluginBatchResultText" Visibility="Collapsed" TextWrapping="Wrap" Margin="0,5,0,0" Foreground="{DynamicResource MutedBrush}" />
+                    </StackPanel>
+                    <DataGrid x:Name="PluginGrid" ItemsSource="{Binding PluginsView}" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" Sorting="PluginGridSorting" SelectionChanged="PluginSelectionChanged" SelectionMode="Extended" SelectionUnit="FullRow">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Plugin" Binding="{Binding Plugin}" Width="*" />
+                            <DataGridTemplateColumn Header="Decision" Width="220" SortMemberPath="Policy" CanUserSort="True">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <ComboBox SelectedValue="{Binding Policy, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Value" DisplayMemberPath="Label" ItemsSource="{DynamicResource PolicyValues}" ItemContainerStyle="{StaticResource ChoiceHelp}" ToolTip="{Binding SelectedItem.Explanation, RelativeSource={RelativeSource Self}}" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Eligible" Binding="{Binding EligibleItems}" Width="75" ElementStyle="{StaticResource NumericText}" />
+                            <DataGridTextColumn Header="Already in lists" Binding="{Binding DistributedItems}" Width="110" ElementStyle="{StaticResource NumericText}" />
+                            <DataGridTextColumn Header="Excluded" Binding="{Binding ExcludedItems}" Width="80" ElementStyle="{StaticResource NumericText}" />
+                            <DataGridTextColumn Header="Examples" Binding="{Binding Examples}" Width="2*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+            <TabItem Header="Individual equipment">
+                <DockPanel>
+                    <ScrollViewer DockPanel.Dock="Top" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Margin="0,0,0,12">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" />
+                            <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="220" Margin="8,0,12,0" AutomationProperties.Name="Search equipment" ToolTip="Filter equipment by plugin, name, Editor ID, record ID, category or eligibility reason. Search is case-insensitive and does not change inclusion choices." />
+                            <Button Content="Use recommended materials" Click="UseMaterialRecommendations" Margin="0,0,16,0" ToolTip="Clear material-family overrides for selected equipment rows with multiple material choices, restore their recommendations and rescan. Other rows and inclusion choices stay unchanged." />
+                            <TextBlock Text="Batch action:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <ComboBox x:Name="ItemBatchChoice" Width="125" SelectionChanged="ItemBatchChanged" Margin="0,0,10,0" ToolTip="{Binding SelectedItem.ToolTip, RelativeSource={RelativeSource Self}}">
+                                <ComboBoxItem Content="Include" ToolTip="Select the highlighted eligible equipment for variant generation. This does not bypass distribution or availability checks. Choose Apply to selected to make the change." />
+                                <ComboBoxItem Content="Exclude" ToolTip="Deselect the highlighted equipment so it is not used to generate variants. Choose Apply to selected to make the change." />
+                            </ComboBox>
+                            <Button x:Name="ApplyItemBatchButton" Content="Apply to selected" Click="ApplyItemBatch" IsEnabled="False" ToolTip="Apply Include or Exclude to highlighted equipment rows only. Hold Ctrl to select separate rows or Shift to select a range. Ineligible equipment cannot be included." ToolTipService.ShowOnDisabled="True" />
+                            <TextBlock x:Name="ItemBatchSelectionText" Text="0 items selected" VerticalAlignment="Center" Margin="12,0,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                    <GroupBox DockPanel.Dock="Bottom" Header="Selected equipment evidence" Margin="0,12,0,0" Height="190">
+                        <DockPanel>
+                            <CheckBox x:Name="IgnoreAuthorEnchantmentListBox" DockPanel.Dock="Top" Margin="0,0,0,6" Content="Ignore the mod author's enchantment list for this item"
+                                      Visibility="{Binding SelectedItem.HasAuthorEnchantmentList, ElementName=ItemGrid, Converter={StaticResource BooleanVisibility}, FallbackValue=Collapsed}"
+                                      IsChecked="{Binding SelectedItem.IgnoreAuthorEnchantmentList, ElementName=ItemGrid, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      ToolTip="Checked: every enchantment you have enabled can be used for this item. Unchecked: only the enchantments the rules file lists. Applied after the automatic rescan." />
+                            <CheckBox x:Name="IgnoreAuthorDestinationListBox" DockPanel.Dock="Top" Margin="0,0,0,6" Content="Ignore the mod author's destination list for this item"
+                                      Visibility="{Binding SelectedItem.HasAuthorDestinationList, ElementName=ItemGrid, Converter={StaticResource BooleanVisibility}, FallbackValue=Collapsed}"
+                                      IsChecked="{Binding SelectedItem.IgnoreAuthorDestinationList, ElementName=ItemGrid, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      ToolTip="Checked: every destination the patcher accepts can receive this item's variants. Unchecked: only the lists and containers the rules file names. Applied after the automatic rescan." />
+                            <TextBox x:Name="ItemEvidence" BorderThickness="0" Text="{Binding SelectedItem.SelectionEvidence, ElementName=ItemGrid, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" />
+                        </DockPanel>
+                    </GroupBox>
+                    <DataGrid x:Name="ItemGrid" Loaded="PrepareGroupedColumns" ItemsSource="{Binding ItemsView}" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Extended" SelectionChanged="ItemSelectionChanged">
+                        <DataGrid.GroupStyle>
+                            <StaticResource ResourceKey="PluginGroups" />
+                        </DataGrid.GroupStyle>
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Patch" Width="60">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding Selected, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding Eligible}" HorizontalAlignment="Center" ToolTip="{Binding Reason}" ToolTipService.ShowOnDisabled="True" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*" />
+                            <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="*" />
+                            <DataGridTextColumn Header="In list" Binding="{Binding AlreadyDistributed, Converter={StaticResource BooleanSymbol}}" Width="75">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SymbolText}">
+                                        <Setter Property="Tag" Value="{Binding AlreadyDistributed, StringFormat=Already in a leveled list: {0}}" />
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding AlreadyDistributed, StringFormat=Already in a leveled list: {0}}" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Variants" Binding="{Binding AvailableVariants}" Width="80" ElementStyle="{StaticResource NumericText}" />
+                            <DataGridTemplateColumn Header="Material family" SortMemberPath="MaterialFamily" Width="245">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <TextBlock Text="{Binding MaterialFamily}" VerticalAlignment="Center" ToolTip="The material family used to match enchanted templates and loot destinations. Items with multiple supported families offer a dropdown; see the evidence below for the recommendation.">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding CanChooseMaterialFamily}" Value="True">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                            <ComboBox Visibility="{Binding CanChooseMaterialFamily, Converter={StaticResource BooleanVisibility}}" ItemsSource="{Binding MaterialFamilyOptions}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding MaterialFamily, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ItemContainerStyle="{StaticResource ChoiceHelp}" ToolTip="{Binding SelectedItem.Explanation, RelativeSource={RelativeSource Self}}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+            <TabItem Header="Specialized loot">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                        <CheckBox x:Name="AllowOtherMaterialRoutesCheckBox" Content="Allow new material lists for specialized enchanted distribution" IsChecked="{Binding AllowOtherMaterialRoutes, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" ToolTip="Allows a missing material family at a compatible enchanted destination. Other safety checks still apply. Does not enable Off items or allow ordinary/enchanted mixing." />
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Search:" VerticalAlignment="Center" />
+                                <TextBox Text="{Binding SpecializedSearchText, UpdateSourceTrigger=PropertyChanged}" Width="220" Margin="8,0,12,0" AutomationProperties.Name="Search specialized equipment" ToolTip="Filter by plugin, item name, Editor ID, record ID, category, recommendation reason, source distribution or option evidence. Search is case-insensitive and does not change choices." />
+                                <TextBlock Text="Batch choice:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <ComboBox x:Name="SpecializedBatchChoice" Width="340" DisplayMemberPath="Label" SelectionChanged="SpecializedBatchChanged" ItemContainerStyle="{StaticResource ChoiceHelp}" ToolTip="{Binding SelectedItem.Explanation, RelativeSource={RelativeSource Self}}" Margin="0,0,10,0" />
+                                <Button x:Name="ApplySpecializedBatchButton" Content="Apply to selected" Click="ApplySpecializedBatch" IsEnabled="False" ToolTip="Apply the chosen distribution choice to highlighted items only. Original locations skips items with no supported route. This does not change their Include checkboxes. General loot must be chosen individually." ToolTipService.ShowOnDisabled="True" />
+                                <Button Content="Use recommendations" Click="UseRecommendations" Margin="10,0" ToolTip="Restore the recommended distribution mode for selected rows and clear their distribution overrides. Inclusion and material choices stay unchanged." />
+                                <TextBlock x:Name="SpecializedBatchSelectionText" Text="0 items selected" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </ScrollViewer>
+                        <TextBlock x:Name="SpecializedBatchResultText" Visibility="Collapsed" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,5,0,0" />
+                    </StackPanel>
+                    <GroupBox DockPanel.Dock="Bottom" Header="Distribution decision summary" Margin="0,12,0,0">
+                        <DockPanel>
+                            <TextBox DockPanel.Dock="Top" Text="{Binding SelectedItem.SpecializedDecisionSummary, ElementName=SpecializedGrid, Mode=OneWay}" Height="90" BorderThickness="0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" />
+                            <Expander Header="Show full evidence" Margin="0,6,0,0" ToolTip="Expand the selected item's detailed distribution routes, gates and refusal evidence.">
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Top" Content="Copy full evidence" Click="CopySpecializedEvidence" HorizontalAlignment="Left" Margin="0,6" ToolTip="Copy the selected item's full distribution evidence to the clipboard." />
+                                    <TextBox Text="{Binding SelectedItem.LootReviewDetails, ElementName=SpecializedGrid, Mode=OneWay}" Height="135" IsReadOnly="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" AcceptsReturn="True" FontFamily="Consolas" />
+                                </DockPanel>
+                            </Expander>
+                        </DockPanel>
+                    </GroupBox>
+                    <DataGrid x:Name="SpecializedGrid" Loaded="PrepareGroupedColumns" ItemsSource="{Binding SpecializedItemsView}" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Extended" SelectionChanged="SpecializedSelectionChanged">
+                        <DataGrid.GroupStyle>
+                            <StaticResource ResourceKey="PluginGroups" />
+                        </DataGrid.GroupStyle>
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Include" Width="65">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding Selected, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding Eligible}" HorizontalAlignment="Center" ToolTip="Include this eligible item in variant generation. Its distribution choice controls where variants may be placed; Off adds no new distribution. Availability and placement checks still apply." ToolTipService.ShowOnDisabled="True" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Item" Binding="{Binding Name}" Width="*" />
+                            <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="180" />
+                            <DataGridTemplateColumn Header="Distribution choice" SortMemberPath="SpecializedMode" Width="530">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <ComboBox x:Name="DistributionChoice" ItemsSource="{Binding SpecializedChoices}" ItemContainerStyle="{StaticResource ChoiceHelp}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SpecializedSelection, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="{Binding SpecializedChoiceImpact}" AutomationProperties.Name="Distribution choice" />
+                                            <TextBlock Text="{Binding SpecializedSavedRuleLabel}" Margin="10,0,30,0" VerticalAlignment="Center" IsHitTestVisible="False">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding SelectedIndex, ElementName=DistributionChoice}" Value="-1">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Grid>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+            <TabItem Header="Enchantments">
+                <DockPanel>
+                    <ScrollViewer DockPanel.Dock="Top" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Margin="0,0,0,12">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" />
+                            <TextBox Text="{Binding EnchantmentSearchText, UpdateSourceTrigger=PropertyChanged}" Width="240" Margin="8,0,12,0" AutomationProperties.Name="Search enchantments" ToolTip="Filter enchantment families by origin plugin, name, Editor ID, record ID, effects or recommendation reason. Search is case-insensitive and does not change enabled tiers." />
+                            <Button x:Name="RestoreEnchantmentDefaultsButton" Content="Use recommendations" Click="RestoreEnchantmentDefaults" Margin="0,0,16,0" ToolTip="Restore each tier's recommendation for every listed family, including rows hidden by search. Keeps provider priority and equipment choices." />
+                            <TextBlock Text="Batch action:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <ComboBox x:Name="EnchantmentBatchChoice" Width="185" SelectionChanged="EnchantmentBatchChanged" Margin="0,0,10,0" ToolTip="{Binding SelectedItem.ToolTip, RelativeSource={RelativeSource Self}}">
+                                <ComboBoxItem Content="Enable" ToolTip="Enable every usable tier in the selected enchantment families. Item and distribution safety checks still apply. Choose Apply to selected to make the change." />
+                                <ComboBoxItem Content="Disable" ToolTip="Disable every usable tier in the selected enchantment families. Choose Apply to selected to make the change." />
+                                <ComboBoxItem Content="Use recommendations" ToolTip="Clear overrides for selected enchantment families and restore each tier's own recommendation. Other families stay unchanged. Choose Apply to selected to make the change." />
+                            </ComboBox>
+                            <Button x:Name="ApplyEnchantmentBatchButton" Content="Apply to selected" Click="ApplyEnchantmentBatch" IsEnabled="False" ToolTip="Apply the chosen action to highlighted enchantment families only. Hold Ctrl to select separate rows or Shift to select a range." ToolTipService.ShowOnDisabled="True" />
+                            <TextBlock x:Name="EnchantmentBatchSelectionText" Text="0 enchantments selected" VerticalAlignment="Center" Margin="12,0,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                    <GroupBox DockPanel.Dock="Bottom" Header="Selected enchantment evidence" Height="190" Margin="0,12,0,0">
+                        <TextBox x:Name="EnchantmentEvidence" BorderThickness="0" Text="{Binding SelectedItem.SelectionEvidence, ElementName=EnchantmentGrid, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AcceptsReturn="True" />
+                    </GroupBox>
+                    <DataGrid x:Name="EnchantmentGrid" Loaded="PrepareGroupedColumns" ItemsSource="{Binding EnchantmentsView}" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" SelectionMode="Extended" SelectionChanged="EnchantmentSelectionChanged" RowHeight="NaN" MinRowHeight="34">
+                        <DataGrid.GroupStyle>
+                            <StaticResource ResourceKey="PluginGroups" />
+                        </DataGrid.GroupStyle>
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Use" Width="55">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding Available}" HorizontalAlignment="Center" ToolTip="{Binding Reason}" ToolTipService.ShowOnDisabled="True" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Enchantment" Binding="{Binding Name}" Width="180" />
+                            <DataGridTextColumn Header="Tiers" Binding="{Binding TierSummary}" Width="55" />
+                            <DataGridTextColumn Header="Effects" Binding="{Binding Effects}" Width="*">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="Wrap" />
+                                        <Setter Property="ToolTip" Value="General effect description from the winning magic-effect record. Magnitude and duration depend on the tier." />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Recommended" Binding="{Binding DefaultSelected, Converter={StaticResource BooleanSymbol}}" Width="110">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SymbolText}">
+                                        <Setter Property="Tag" Value="{Binding DefaultSelected, StringFormat=Recommended: {0}}" />
+                                        <Setter Property="AutomationProperties.Name" Value="{Binding DefaultSelected, StringFormat=Recommended: {0}}" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Templates" Binding="{Binding TemplateCount}" Width="85" ElementStyle="{StaticResource NumericText}" />
+                            <DataGridTextColumn Header="In lists" Binding="{Binding LeveledTemplateCount}" Width="70" ElementStyle="{StaticResource NumericText}" />
+                            <DataGridTextColumn Header="Base Editor ID" Binding="{Binding EditorId}" Width="200" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+        </TabControl>
+        <Grid x:Name="RescanOverlay" Panel.ZIndex="100" Background="Transparent">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsBusyVisual}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsRescanning}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <Border Width="520" Style="{StaticResource PanelBorder}" Padding="28" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <ContentControl x:Name="ReviewBusyIconHost" Width="112" Height="112" HorizontalAlignment="Center" Margin="0,0,0,12" />
+                    <TextBlock Text="{Binding BusyTitle}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding Status}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,14" />
+                    <ProgressBar Value="{Binding OperationProgressPercent, Mode=OneWay, TargetNullValue=0}"
+                                 IsIndeterminate="{Binding IsOperationProgressUnknown, Mode=OneWay}"
+                                 AutomationProperties.Name="Operation progress" />
+                    <TextBlock Text="{Binding SettingsPersistenceHint}" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource MutedBrush}" Margin="0,16,0,0" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

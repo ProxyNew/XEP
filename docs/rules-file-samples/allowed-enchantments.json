@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "plugin": "ExampleGear.esp",
+      "items": [
+        {
+          "id": "frost-guard-blades",
+          "requires": ["allowedEnchantments"],
+          "records": ["000801:ExampleGear.esp", "000802:ExampleGear.esp"],
+          "allowedEnchantments": ["000900:ExampleGear.esp"],
+          "reason": "The frost guard only carries frost-enchanted blades."
+        }
+      ]
+    }
+  ]
+}

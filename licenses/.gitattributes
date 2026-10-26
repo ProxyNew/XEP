@@ -1,0 +1,3 @@
+# Preserve upstream notice bytes, including original line endings.
+nuget/** -text -whitespace
+dotnet-desktop/**/*.TXT -text -whitespace

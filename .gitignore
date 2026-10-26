@@ -1,0 +1,26 @@
+# Build and IDE output
+bin/
+obj/
+.vs/
+*.user
+*.suo
+# Local runs and release packages
+test-output/
+Compiled/
+Releases/
+Snapshots/
+artifacts/
+*.esp
+*.esl
+# Dependency source cache (downloaded and verified during packaging)
+licenses/sources/
+# Local settings, credentials and agent workspace files
+.env
+.env.*
+!.env.example
+.scratch/
+.claude/
+.codex/
+.vibe-wise/
+__pycache__/
+*.pyc

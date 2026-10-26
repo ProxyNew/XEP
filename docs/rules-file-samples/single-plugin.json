@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "plugin": "ExampleGear.esp",
+      "defaults": {
+        "patchPolicy": "ExistingDistribution",
+        "distributionMode": "SpecializedEnchantedLists",
+        "reason": "Variants belong in the mod's own enchanted lists."
+      },
+      "items": [
+        {
+          "id": "keep-relic-unique",
+          "records": ["000800:ExampleGear.esp"],
+          "include": false,
+          "reason": "This relic is intended to remain unique."
+        },
+        {
+          "records": ["000801:ExampleGear.esp", "000802:ExampleGear.esp"],
+          "materialFamily": "Steel",
+          "distributionMode": "GeneralLists"
+        }
+      ],
+      "enchantments": [
+        {
+          "records": ["000900:ExampleGear.esp"],
+          "enabled": false,
+          "reason": "Quest-only enchantment."
+        }
+      ]
+    }
+  ]
+}

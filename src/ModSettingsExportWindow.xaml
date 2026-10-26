@@ -1,0 +1,46 @@
+<Window x:Class="XEnchantmentPatcher.ModSettingsExportWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Export mod settings" Width="740" Height="600" MinWidth="560" MinHeight="440"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <DockPanel Margin="20">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+            <TextBlock Text="Choose mods to export" FontSize="22" FontWeight="SemiBold" />
+            <TextBlock Text="Choose mods whose configured rules and record overrides you want to ship as a mod-author rules file. Only mods with configured choices are listed."
+                       TextWrapping="Wrap" Margin="0,10,0,8" />
+            <TextBlock Text="Shared options, origin priority, folders and history are excluded. Recommendations stay automatic. Install the file as Data/XEnchantmentPatcher/xep_pluginrules.json; XEP can validate it, but does not apply it during Scan yet."
+                       TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" />
+            <TextBlock Text="Search mods" Margin="0,14,0,5" />
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="10,0,0,0">
+                    <Button Content="Select all" Click="SelectAll" Margin="0,0,8,0" ToolTip="Check every listed mod, including mods hidden by search." />
+                    <Button Content="Clear" Click="Clear" ToolTip="Uncheck every mod, including mods hidden by search." />
+                </StackPanel>
+                <TextBox x:Name="SearchInput" TextChanged="SearchChanged" AutomationProperties.Name="Search mods to export"
+                         ToolTip="Filter plugin names without changing checked mods. Checked mods hidden by search remain included in the export." />
+            </DockPanel>
+        </StackPanel>
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,14,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Cancel" IsCancel="True" Margin="0,0,8,0" ToolTip="Close without writing an export file." />
+                <Button x:Name="ExportButton" Content="Export rules file…" Click="Accept" IsDefault="True" IsEnabled="False"
+                        ToolTip="Choose where to save the rules file for the checked mods. Search does not change which checked mods are exported." ToolTipService.ShowOnDisabled="True" />
+            </StackPanel>
+            <TextBlock x:Name="SelectionCount" Text="0 mods selected" VerticalAlignment="Center" />
+        </DockPanel>
+        <Grid>
+            <ListBox x:Name="ModList" ItemsSource="{Binding ModsView}" AutomationProperties.Name="Mods to export">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <DockPanel Margin="2,5">
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding ChoiceSummary}" Foreground="{DynamicResource MutedBrush}" Margin="12,0,0,0" VerticalAlignment="Center" />
+                            <CheckBox Content="{Binding Plugin}" IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"
+                                      ToolTip="Include this mod's configured rules and record overrides in the rules file." />
+                        </DockPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+            <TextBlock x:Name="EmptyMessage" Text="No mods match this search." Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource MutedBrush}" IsHitTestVisible="False" />
+        </Grid>
+    </DockPanel>
+</Window>

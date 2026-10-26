@@ -1,0 +1,40 @@
+<Window x:Class="XEnchantmentPatcher.AuthorConflictWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Mod-author rules differ from your choices" Width="780" Height="580" MinWidth="600" MinHeight="440"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <DockPanel Margin="20">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+            <TextBlock Text="The rules file differs from your choices" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap" />
+            <TextBlock x:Name="Summary" TextWrapping="Wrap" Margin="0,10,0,8" />
+            <TextBlock Text="Keeping your choice is remembered until the author or you change the value. Using the author's value removes your saved choice, so removing the rules file later returns it to XEP's recommendation."
+                       TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" />
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                <Button Content="Keep all mine" Click="KeepAll" Margin="0,0,8,0" ToolTip="Keep your choice for every listed field." />
+                <Button Content="Use all author values" Click="UseAll" ToolTip="Use the rules file's value for every listed field." />
+            </StackPanel>
+        </StackPanel>
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,14,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Decide later" IsCancel="True" Margin="0,0,8,0" ToolTip="Keep your choices for now and ask again after the next scan." />
+                <Button x:Name="ApplyButton" Content="Apply" Click="Accept" IsDefault="True" ToolTip="Save these answers." />
+            </StackPanel>
+            <TextBlock x:Name="SelectionCount" VerticalAlignment="Center" TextWrapping="Wrap" />
+        </DockPanel>
+        <ListBox x:Name="ConflictList" AutomationProperties.Name="Rules file conflicts" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <DockPanel Margin="2,6">
+                        <CheckBox DockPanel.Dock="Right" Content="Use author value" IsChecked="{Binding UseAuthor, UpdateSourceTrigger=PropertyChanged}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                  ToolTip="Checked: the rules file's value applies. Unchecked: your choice is kept." />
+                        <StackPanel>
+                            <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Values}" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" />
+                        </StackPanel>
+                    </DockPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</Window>

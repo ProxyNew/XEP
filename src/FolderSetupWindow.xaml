@@ -1,0 +1,20 @@
+<Window x:Class="XEnchantmentPatcher.FolderSetupWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="XEnchantmentPatcher — Folder setup" Width="700" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterScreen">
+    <StackPanel Margin="24">
+        <TextBlock Text="Folder setup" FontSize="24" FontWeight="SemiBold" />
+        <TextBlock Text="Choose your game data and patch output folders. These folders are shared by all settings profiles." TextWrapping="Wrap" Margin="0,10,0,20" Foreground="{DynamicResource MutedBrush}" />
+        <TextBlock Text="Data folder" />
+        <DockPanel Margin="0,7,0,16">
+            <Button Content="Browse.." Click="BrowseData" DockPanel.Dock="Right" Margin="10,0,0,0" ToolTip="Choose an existing Skyrim Special Edition Data folder." />
+            <TextBox x:Name="DataInput" AutomationProperties.Name="Data folder" ToolTip="The existing Skyrim Special Edition Data folder that XEP reads to analyze plugins and equipment." />
+        </DockPanel>
+        <TextBlock Text="Choose an existing Skyrim Special Edition Data folder." TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,14" />
+        <TextBlock Text="Output folder" />
+        <DockPanel Margin="0,7,0,10">
+            <Button Content="Browse.." Click="BrowseOutput" DockPanel.Dock="Right" Margin="10,0,0,0" ToolTip="Choose a separate folder for generated patch files." />
+            <TextBox x:Name="OutputInput" AutomationProperties.Name="Output folder" ToolTip="Use an absolute path to a folder separate from Data. XEP creates it if needed and writes the generated patch files here." />
+        </DockPanel>
+        <TextBlock Text="Use an absolute path to a folder separate from Data. XEP creates it if needed; install its generated files as a mod." TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,14" />
+        <TextBlock x:Name="ValidationMessage" Foreground="{DynamicResource ErrorBrush}" TextWrapping="Wrap" Margin="0,0,0,12" />
+        <Button x:Name="ContinueButton" Content="Continue" Click="Continue" IsDefault="True" HorizontalAlignment="Center" Width="190" ToolTip="Validate and save these shared folders, then continue to scanning. Closing this dialog cancels folder setup." />
+    </StackPanel>
+</Window>

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "plugin": "ExampleGear.esp",
+      "items": [
+        {
+          "id": "plain-rule",
+          "records": ["000801:ExampleGear.esp"],
+          "include": true
+        },
+        {
+          "id": "needs-newer-xep",
+          "requires": ["exampleFutureFeature"],
+          "records": ["000802:ExampleGear.esp"],
+          "include": true,
+          "exampleFutureFeature": true,
+          "reason": "A v1 reader leaves this rule unused and reports that the file needs a newer XEP; plain-rule still applies."
+        }
+      ]
+    }
+  ]
+}

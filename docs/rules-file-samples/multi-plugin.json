@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "plugin": "ExampleGear.esp",
+      "defaults": { "patchPolicy": "ExistingDistribution" }
+    },
+    {
+      "plugin": "ExampleArmory.esm",
+      "defaults": { "patchPolicy": "Exclude", "reason": "Only the listed sets are meant to vary." },
+      "items": [
+        {
+          "id": "guard-sets",
+          "records": ["000D62:ExampleArmory.esm", "000D63:ExampleArmory.esm"],
+          "include": true,
+          "distributionMode": "ScriptDistribution"
+        }
+      ]
+    }
+  ]
+}

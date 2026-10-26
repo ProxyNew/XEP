@@ -12,7 +12,7 @@ Third-party software remains under its own licenses and copyright notices; this 
 
 Keep LICENSE, this document, THIRD-PARTY-NOTICES.md, the required license notices and the Champollion executable/notices with the binary release. The release packager initially produces a combined package with matching XEP source, project/build scripts, pinned restore metadata, and dependency source archives/notices. Third-party sources are unmodified upstream snapshots unless explicitly documented otherwise.
 
-For Nexus 1.0.0, source is distributed separately as `XEnchantmentPatcher-1.0.0-corresponding-source.zip` on the [v1.0.0 GitHub release](https://github.com/ProxyNew/XEP/releases/tag/v1.0.0). This asset includes the complete source payload from the combined package; its `source/README.md` explains how to rebuild. End users do not need it to run XEP.
+For 1.0.0, source is distributed separately as `XEnchantmentPatcher-1.0.0-corresponding-source.zip` on the [v1.0.0 GitHub release](https://github.com/ProxyNew/XEP/releases/tag/v1.0.0). This asset includes the complete source payload from the combined package; its `source/README.md` explains how to rebuild. End users do not need it to run XEP.
 
 Under GPLv3 section 6(d), provide equivalent free access to the matching corresponding source, with clear directions beside the binary download, and keep it available. Upload and verify the source asset before distributing the slim binary ZIP. A moving development branch or GitHub's automatic repository ZIP alone is not a replacement for this complete release source asset.
 

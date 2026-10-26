@@ -39,7 +39,7 @@ pwsh -File tools/package-release.ps1 -Destination artifacts/release-1.0.0
 
 The destination must be new. Packaging builds the application, verifies the restored dependency inventory, includes license notices and matching source, checks the executable's startup identity and verifies the resulting ZIP. Large upstream source archives (about 290 MB) are downloaded from pinned URLs and checked against SHA-256 hashes; they are excluded from Git.
 
-The Nexus 1.0.0 download separates end-user files from source. Its matching `XEnchantmentPatcher-1.0.0-corresponding-source.zip` is provided as an asset on the [v1.0.0 release](https://github.com/ProxyNew/XEP/releases/tag/v1.0.0). It contains the exact XEP source/build inputs and third-party source archives, including Mutagen and Champollion. GitHub's automatically generated repository source ZIP alone does not contain those dependency archives.
+The 1.0.0 application download separates end-user files from source. Its matching `XEnchantmentPatcher-1.0.0-corresponding-source.zip` is provided as an asset on the [v1.0.0 release](https://github.com/ProxyNew/XEP/releases/tag/v1.0.0). It contains the exact XEP source/build inputs and third-party source archives, including Mutagen and Champollion. GitHub's automatically generated repository source ZIP alone does not contain those dependency archives.
 
 For split distribution, keep the complete corresponding-source asset freely available and place a clear link beside the binary download. Retain the binary's licenses and notices. See [LICENSING.md](LICENSING.md).
 

@@ -1,6 +1,6 @@
 # Third-party notices
 
-XEnchantmentPatcher uses the following software. Each component retains its own copyright and license. Full notices and source provenance accompany the release in `licenses/`; the build-specific inventory is `licenses/resolved-components.json`. In the slim Nexus release, source archives mentioned below are supplied separately in `XEnchantmentPatcher-1.0.0-corresponding-source.zip` on the [v1.0.0 release](https://github.com/ProxyNew/XEP/releases/tag/v1.0.0). Paths to source archives refer to that companion download.
+XEnchantmentPatcher uses the following software. Each component retains its own copyright and license. Full notices and source provenance accompany the release in `licenses/`; the build-specific inventory is `licenses/resolved-components.json`. In the 1.0.0 application download, source archives mentioned below are supplied separately in `XEnchantmentPatcher-1.0.0-corresponding-source.zip` on the [v1.0.0 release](https://github.com/ProxyNew/XEP/releases/tag/v1.0.0). Paths to source archives refer to that companion download.
 
 ## Mutagen and other managed dependencies
 

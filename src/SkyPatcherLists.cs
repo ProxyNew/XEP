@@ -15,7 +15,7 @@ public static partial class PatcherEngine
     // Native startup inputs are an analytical overlay, not plugin overrides.
     // Keep the physical baseline and the append occurrences together so normal
     // output can leave those occurrences for SkyPatcher to apply exactly once.
-    private sealed class SkyPatcherLists
+    internal sealed class SkyPatcherLists
     {
         public Dictionary<FormKey, ILeveledItemGetter> Physical { get; } = [];
         public Dictionary<FormKey, List<LeveledItemEntry>> Appended { get; } = [];
@@ -33,30 +33,28 @@ public static partial class PatcherEngine
         private sealed record StagedDispatch(FormKey Target, ILeveledItemGetter Prior, LeveledItem? Changed,
             LeveledItemEntry[] Added, PresenceCheck[] Checks, int Replaced, int Removed, int Skipped);
         private readonly Dictionary<FormKey, List<PresenceCheck>> presenceChecks = [];
-        private sealed record EditorIdFilter(string[] And, string[] Or, string[] Excluded)
+        internal sealed record EditorIdFilter(string[] And, string[] Or, string[] Excluded)
         {
             public bool HasPositive => And.Length > 0 || Or.Length > 0;
-            public bool Matches(string? editorId)
-            {
-                var folded = FoldEditorId(editorId ?? "");
-                bool Contains(string term) => folded.Contains(term, StringComparison.Ordinal);
-                return HasPositive && And.All(Contains) && (Or.Length == 0 || Or.Any(Contains)) && !Excluded.Any(Contains);
-            }
+            public bool Matches(string? editorId) => Matches(FoldEditorId(editorId ?? "").Contains);
+            // One folded name, tested against every filter of a generated list.
+            public bool Matches(Func<string, bool> contains)
+                => HasPositive && And.All(contains) && (Or.Length == 0 || Or.Any(contains)) && !Excluded.Any(contains);
         }
-        private sealed record Replacement(FormKey From, FormKey To);
-        private sealed record Restriction(string Relation, ushort Value)
+        internal sealed record Replacement(FormKey From, FormKey To);
+        internal sealed record Restriction(string Relation, ushort Value)
         {
             public bool Matches(ushort value) => Relation switch
             { "<" => value < Value, ">" => value > Value, "<=" => value <= Value, ">=" => value >= Value, _ => value == Value };
         }
-        private sealed record Removal(FormKey Item, Restriction? Level, Restriction? Count)
+        internal sealed record Removal(FormKey Item, Restriction? Level, Restriction? Count)
         {
             public bool Matches(ProjectedStaticEntry entry) => entry.Reference.GeneratedOccurrence is null && entry.Reference.Existing == Item
                 && (Level is null && Count is null || Level?.Matches(unchecked((ushort)(entry.Level ?? 0))) == true || Count?.Matches(unchecked((ushort)entry.Count)) == true);
         }
         // List controls are assignments: the rule's last flag key wins, a global is
         // set or cleared, and Chance None is replaced. Count multipliers run last.
-        private sealed record ListControls(LeveledItem.Flag? Flags, bool ClearGlobal, FormKey Global, Percent? ChanceNone)
+        internal sealed record ListControls(LeveledItem.Flag? Flags, bool ClearGlobal, FormKey Global, Percent? ChanceNone)
         {
             public bool Any => Flags is not null || ClearGlobal || !Global.IsNull || ChanceNone is not null;
             public void Apply(LeveledItem list)
@@ -80,8 +78,8 @@ public static partial class PatcherEngine
                     global ? next.Global : Global, next.ChanceNone ?? ChanceNone);
             }
         }
-        private sealed record CountMultiplier(FormKey Item, float Factor);
-        private sealed record NativeRule(string Location, (LeveledItemEntry Entry, bool Once)[] Payloads, Replacement[] Replacements,
+        internal sealed record CountMultiplier(FormKey Item, float Factor);
+        internal sealed record NativeRule(string Location, (LeveledItemEntry Entry, bool Once)[] Payloads, Replacement[] Replacements,
             Removal[] Removals, IReadOnlySet<FormKey> KeywordItems, bool HasKeywordRemoval, bool Clear, EditorIdFilter? Filter = null)
         {
             public ListControls Controls { get; init; } = new(null, false, default, null);
@@ -93,7 +91,7 @@ public static partial class PatcherEngine
         private readonly Dictionary<FormKey, ListControls> appliedControls = [];
         public bool PreservesControls(FormKey list, ILeveledItemGetter proposed, LeveledItem.Flag? flags = null)
             => !appliedControls.TryGetValue(list, out var controls) || controls.Preserves(proposed, flags);
-        private readonly List<NativeRule> broadRules = [];
+        internal readonly List<NativeRule> broadRules = [];
         private readonly Dictionary<FormKey, List<NativeRule>> dispatches = [];
         private readonly Dictionary<FormKey, HashSet<(FormKey Source, FormKey Predecessor)>> replacementPeers = [];
         public bool HasReplacementPeer(FormKey list, FormKey source, FormKey predecessor)
@@ -121,11 +119,13 @@ public static partial class PatcherEngine
         private (ImmutableArray<ProjectedStaticEntry> Effective, ImmutableArray<ProjectedStaticEntry> Physical)
             ProjectGeneratedCore(ILeveledItemGetter list, ImmutableArray<ProjectedStaticEntry> desired, string? editorId, bool deferOverflowProof)
         {
-            InvalidDataException Refuse(string why) => new($"SkyPatcher generated list {list.EditorID} [{list.FormKey}]: {why}. No output was installed.");
+            RouteRefusalException Refuse(string why) => new($"SkyPatcher generated list {list.EditorID} [{list.FormKey}]: {why}.");
             if (broadRules.Count == 0) return (desired, desired);
             if (desired.Length > 255 && !deferOverflowProof) throw Refuse("overflow children require a broad-selector composition proof");
             if (desired.Length > 120) return (desired, desired); // Every native dispatch skips this list.
-            var matching = broadRules.Where(r => r.Filter is null || r.Filter.Matches(editorId)).ToArray();
+            Func<string, bool> contains = FoldEditorId(editorId ?? "").Contains;
+            var matching = broadRules.Where(r => r.Filter is null || r.Filter.Matches(contains)).ToArray();
+            if (matching.Length == 0) return (desired, desired); // What the loops below return when no rule runs.
             var physical = desired.ToList();
             foreach (var (entry, once) in matching.SelectMany(r => r.Payloads))
             {
@@ -181,14 +181,19 @@ public static partial class PatcherEngine
             for (var i = 0; i < source.Length; i++) result[i] = source[i] is >= 'A' and <= 'Z' ? (char)(source[i] + 32) : source[i];
         });
 
-        public string SelectorIdentity(string? editorId) => string.Join(',', broadRules.Select((rule, index) => (rule, index))
-            .Where(p => p.rule.Filter is null || p.rule.Filter.Matches(editorId)).Select(p => p.index));
+        // The name is folded once a call, when the first EditorID filter is tested.
+        public string SelectorIdentity(string? editorId)
+        {
+            Func<string, bool>? contains = null;
+            return string.Join(',', broadRules.Select((rule, index) => (rule, index))
+                .Where(p => p.rule.Filter is null || p.rule.Filter.Matches(contains ??= FoldEditorId(editorId ?? "").Contains)).Select(p => p.index));
+        }
 
         private static bool SameEntry(ProjectedStaticEntry projected, LeveledItemEntry entry)
             => projected.Reference.GeneratedOccurrence is null && projected.Reference.Existing == entry.Data!.Reference.FormKey
                 && projected.Level == entry.Data.Level && projected.Count == entry.Data.Count && !projected.HasExtraData;
 
-        private static List<ProjectedStaticEntry> Project(IEnumerable<ILeveledItemEntryGetter> entries) => entries
+        internal static List<ProjectedStaticEntry> Project(IEnumerable<ILeveledItemEntryGetter> entries) => entries
             .Select(e => new ProjectedStaticEntry(e, new(e.Data?.Reference.FormKey ?? FormKey.Null))).ToList();
 
         // Replacement changes only the reference. Keep the complete entry payload.
@@ -216,7 +221,7 @@ public static partial class PatcherEngine
         private static int Erase(List<ProjectedStaticEntry> entries, NativeRule rule)
         {
             if (rule.HasKeywordRemoval && entries.Any(e => e.Reference.GeneratedOccurrence is not null))
-                throw new InvalidDataException($"SkyPatcher {rule.Location}: keywords of newly generated entries are unproved for keyword removal. No output was installed.");
+                throw new RouteRefusalException($"SkyPatcher {rule.Location}: keywords of newly generated entries are unproved for keyword removal.");
             var before = entries.Count;
             if (rule.Clear) entries.Clear();
             else entries.RemoveAll(e => rule.Removals.Any(r => r.Matches(e)) || rule.KeywordItems.Contains(e.Reference.Existing));
@@ -237,7 +242,7 @@ public static partial class PatcherEngine
                 if (entry.Reference.GeneratedOccurrence is not null || entry.Reference.Existing != multiplier.Item || !entry.HasData) continue;
                 var count = MultipliedCount(entry.Count, multiplier.Factor);
                 if (count > short.MaxValue)
-                    throw new InvalidDataException($"SkyPatcher count multiplier for {multiplier.Item} exceeds the supported count range. No output was installed.");
+                    throw new RouteRefusalException($"SkyPatcher count multiplier for {multiplier.Item} exceeds the supported count range.");
                 var payload = entry.Payload;
                 payload.Data!.Count = (short)count;
                 entries[i] = new(payload, entry.Reference);
@@ -289,7 +294,7 @@ public static partial class PatcherEngine
 
         private ImmutableArray<ProjectedStaticEntry> WriteMutations(FormKey target, ImmutableArray<ProjectedStaticEntry> desired)
         {
-            InvalidDataException Refuse(string reason) => new($"SkyPatcher target {target}: {reason}. No output was installed.");
+            RouteRefusalException Refuse(string reason) => new($"SkyPatcher target {target}: {reason}.");
             // Preserve physical authored entries, adding only the XEP delta. This
             // avoids trying to invert many-to-one replacements or ordered chains.
             var additions = desired.ToList();
@@ -318,17 +323,17 @@ public static partial class PatcherEngine
 
         // Planning asks the writer's exact composition question. A refusal names
         // why this list cannot carry the planned entries; it is never a reason to
-        // abort an otherwise valid run.
+        // abort an otherwise valid run. Any other failure is not a refusal and propagates.
         public string? WritingProblem(FormKey target, ImmutableArray<ProjectedStaticEntry> desired, ILeveledItemGetter? written = null)
         {
             try { ForWriting(target, desired, written); return null; }
-            catch (InvalidDataException ex) { return ex.Message.Replace(" No output was installed.", "", StringComparison.Ordinal); }
+            catch (RouteRefusalException refusal) { return refusal.Message; }
         }
 
         public string? GeneratedProblem(ILeveledItemGetter list, ImmutableArray<ProjectedStaticEntry> desired, string? editorId)
         {
             try { ProjectGeneratedWithName(list, desired, editorId); return null; }
-            catch (InvalidDataException ex) { return ex.Message.Replace(" No output was installed.", "", StringComparison.Ordinal); }
+            catch (RouteRefusalException refusal) { return refusal.Message; }
         }
 
         public void ValidateOutputPlugins(IEnumerable<string> outputPaths)
@@ -357,26 +362,26 @@ public static partial class PatcherEngine
             ILeveledItemGetter? written, bool deferOverflowProof)
         {
             if (Problems.ContainsKey(target))
-                throw new InvalidDataException($"SkyPatcher target {target}: unsupported input prevents proving output composition. No output was installed.");
+                throw new RouteRefusalException($"SkyPatcher target {target}: unsupported input prevents proving output composition.");
             // Native control assignments run again at startup. A written header that
             // differs from the effective one would be silently overwritten.
             if (written is not null && !PreservesControls(target, written))
-                throw new InvalidDataException($"SkyPatcher target {target}: XEP list controls would be reassigned by native startup rules. No output was installed.");
+                throw new RouteRefusalException($"SkyPatcher target {target}: XEP list controls would be reassigned by native startup rules.");
             if (HasEditorIdRules && desired.Length > 255 && !deferOverflowProof)
-                throw new InvalidDataException($"SkyPatcher target {target}: overflow children require an EditorID-selector composition proof. No output was installed.");
+                throw new RouteRefusalException($"SkyPatcher target {target}: overflow children require an EditorID-selector composition proof.");
             if (!Physical.TryGetValue(target, out var baseline)) return desired;
             var imported = Appended.GetValueOrDefault(target) ?? [];
             var effectiveBaseline = effective[target].Entries?.Count ?? 0;
             var delta = desired.Length - effectiveBaseline;
             if (delta > AdditionalCapacity.GetValueOrDefault(target, int.MaxValue) || delta < MinimumDelta.GetValueOrDefault(target, int.MinValue))
-                throw new InvalidDataException($"SkyPatcher target {target}: XEP additions would change native capacity dispatch. No output was installed.");
+                throw new RouteRefusalException($"SkyPatcher target {target}: XEP additions would change native capacity dispatch.");
             if (dispatches[target].Any(r => r.Mutates)) return WriteMutations(target, desired);
             var physical = desired.ToList();
             foreach (var entry in imported)
             {
                 var index = physical.FindIndex(e => SameEntry(e, entry));
                 if (index < 0)
-                    throw new InvalidDataException($"SkyPatcher target {target}: a rewritten imported entry cannot be preserved by normal output. No output was installed.");
+                    throw new RouteRefusalException($"SkyPatcher target {target}: a rewritten imported entry cannot be preserved by normal output.");
                 physical.RemoveAt(index);
             }
             var present = physical.Where(e => e.Reference.GeneratedOccurrence is null).Select(e => e.Reference.Existing).ToHashSet();
@@ -385,10 +390,10 @@ public static partial class PatcherEngine
             {
                 while (applied < check.PriorAppends) present.Add(imported[applied++].Data!.Reference.FormKey);
                 if (present.Contains(check.Item) != check.Present)
-                    throw new InvalidDataException($"SkyPatcher target {target}: XEP output would change an addOnceToLLs presence test. No output was installed.");
+                    throw new RouteRefusalException($"SkyPatcher target {target}: XEP output would change an addOnceToLLs presence test.");
             }
             if (physical.Count > 255 && !deferOverflowProof)
-                throw new InvalidDataException($"SkyPatcher target {target}: overflow restructuring requires a separate native dispatch proof. No output was installed.");
+                throw new RouteRefusalException($"SkyPatcher target {target}: overflow restructuring requires a separate native dispatch proof.");
             return physical.ToImmutableArray();
         }
 
@@ -403,7 +408,7 @@ public static partial class PatcherEngine
                 if (beforeLlos && node.EntryCount > 120) return;
                 if (originalRoot && dispatches.ContainsKey(root)
                     || broadRules.Any(r => r.Filter is null || r.Filter.Matches(name)))
-                    throw new InvalidDataException($"SkyPatcher list {rootName} [{root}]: overflow children or root match a native dispatch at {name}; its eligibility and consumers are unproved. No output was installed.");
+                    throw new RouteRefusalException($"SkyPatcher list {rootName} [{root}]: overflow children or root match a native dispatch at {name}; its eligibility and consumers are unproved.");
             }
             void Visit(StaticOverflowNode node)
             {
@@ -659,7 +664,7 @@ public static partial class PatcherEngine
                     {
                         var counted = Project(changed.Entries);
                         try { Multiply(counted, program.Multipliers); }
-                        catch (InvalidDataException) { problem = $"Unsupported SkyPatcher count multiplier at {location}."; break; }
+                        catch (RouteRefusalException) { problem = $"Unsupported SkyPatcher count multiplier at {location}."; break; }
                         changed.Entries = new(counted.Select(e => e.Payload));
                     }
                     changed.Entries = new(changed.Entries.OrderBy(e => e.Data!.Level));
@@ -851,22 +856,11 @@ public static partial class PatcherEngine
             return Regex.IsMatch(text, @"^filterByCells=\s*" + form + @"\s*:\s*" + form + @"\s*$", RegexOptions.CultureInvariant);
         }
 
+        // The switch captured from SkyPatcher.ini: a category runs when its value reads nonzero as the native
+        // GetPrivateProfileIntA call reads it; one the file does not name is off, and without a map every
+        // category may run.
         public static bool CategoryMayRun(SkyPatcherInputReport inputs, string category)
-        {
-            if (!inputs.CapturedBytes.TryGetValue("SkyPatcher.ini", out var bytes)) return true;
-            using var reader = new StreamReader(new MemoryStream(bytes.ToArray()), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            var inPatcher = false;
-            while (reader.ReadLine() is { } raw)
-            {
-                var line = raw.Trim();
-                if (line.StartsWith(';') || line.Length == 0) continue;
-                if (line.StartsWith('[') && line.EndsWith(']')) { inPatcher = line[1..^1].Equals("Patcher", StringComparison.OrdinalIgnoreCase); continue; }
-                var pair = line.Split('=', 2);
-                if (inPatcher && pair.Length == 2 && pair[0].Trim().Equals($"iEnable{category}Patching", StringComparison.OrdinalIgnoreCase))
-                    return !int.TryParse(pair[1].Trim(), out var enabled) || enabled != 0;
-            }
-            return false;
-        }
+            => inputs.CategorySwitches is not { } switches || switches.TryGetValue(category, out var on) && on;
     }
 
     // SkyPatcher runs after plugins load. A planned entry that a later native

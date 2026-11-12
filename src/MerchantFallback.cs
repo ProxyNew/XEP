@@ -10,10 +10,10 @@ namespace XEnchantmentPatcher;
 public static partial class PatcherEngine
 {
     [Flags]
-    private enum MerchantEquipmentKind { None = 0, Weapon = 1, Armor = 2, Jewelry = 4 }
-    private sealed record MerchantVendor(FormKey Container, HashSet<FormKey> FilterKeywords, bool ExcludeListed,
+    internal enum MerchantEquipmentKind { None = 0, Weapon = 1, Armor = 2, Jewelry = 4 }
+    internal sealed record MerchantVendor(FormKey Container, HashSet<FormKey> FilterKeywords, bool ExcludeListed,
         MerchantEquipmentKind StockKinds);
-    private sealed record MerchantAvailability(MaterialAvailabilityPath Path, short Level, string? Problem = null);
+    internal sealed record MerchantAvailability(MaterialAvailabilityPath Path, short Level, string? Problem = null);
 
     private static MerchantEquipmentKind MerchantKind(IMajorRecordGetter item, Catalog catalog)
     {
@@ -26,7 +26,7 @@ public static partial class PatcherEngine
             ? MerchantEquipmentKind.Armor : MerchantEquipmentKind.None;
     }
 
-    private static MerchantAvailability MerchantAvailabilityFor(FormKey source, Catalog catalog)
+    internal static MerchantAvailability MerchantAvailabilityFor(FormKey source, Catalog catalog)
     {
         if (catalog.MerchantAvailabilityCache.TryGetValue(source, out var cached)) return cached;
         MerchantAvailability Block(string problem) => catalog.MerchantAvailabilityCache[source] = new(new(), 1, problem);
@@ -57,7 +57,7 @@ public static partial class PatcherEngine
     // inclusive/exclusive keyword filter. Inverted filters additionally require
     // original stock of the item's equipment kind. No plugin or EditorID allow-list
     // participates in the choice.
-    private static FormKey[] MerchantContainersFor(IMajorRecordGetter source, Catalog catalog)
+    internal static FormKey[] MerchantContainersFor(IMajorRecordGetter source, Catalog catalog)
     {
         lock (catalog.MerchantEligibilityCache)
             if (catalog.MerchantEligibilityCache.TryGetValue(source.FormKey, out var cached)) return cached;
@@ -68,9 +68,6 @@ public static partial class PatcherEngine
             using var timing = PhaseTiming.Measure("merchant.vendor-index");
             var formLists = catalog.Mods.SelectMany(m => m.FormLists).GroupBy(x => x.FormKey)
                 .ToDictionary(g => g.Key, g => g.Last());
-            // Resolve only the vendor factions' referenced REFRs. A typed link
-            // cache preserves winning overrides without decoding all major records.
-            using var placed = catalog.Mods.ToImmutableLinkCache();
             var factions = catalog.Mods.SelectMany(m => m.Factions).GroupBy(x => x.FormKey).Select(g => g.Last());
             var listKeywords = new Dictionary<FormKey, HashSet<FormKey>?>();
             // Stock evidence is original input CONT/LVLI topology. Build it once,
@@ -121,8 +118,8 @@ public static partial class PatcherEngine
             {
                 if (faction.IsDeleted || !faction.Flags.HasFlag(Faction.FactionFlag.Vendor)
                     || faction.VendorBuySellList.IsNull || faction.MerchantContainer.IsNull
-                    || !placed.TryResolve<IPlacedObjectGetter>(faction.MerchantContainer.FormKey, out var reference)
-                    || reference.IsDeleted || reference.Base.IsNull)
+                    || !RuntimeRecordWinners(catalog).TryGetValue(faction.MerchantContainer.FormKey, out var found)
+                    || found.Record is not IPlacedObjectGetter reference || reference.IsDeleted || reference.Base.IsNull)
                     continue;
                 var containerKey = reference.Base.FormKey;
                 if (catalog.ConsumerRecords.Containers.TryGetValue(containerKey, out var container) && !container.IsDeleted
@@ -169,11 +166,8 @@ public static partial class PatcherEngine
 
         var cls = CachedClass(source, catalog);
         var shape = CachedShape(source, catalog);
-        var templates = cls is null ? null : catalog.TemplatesByClass.GetValueOrDefault(ClassKey(cls));
-        var broad = templates is not { Count: > 0 } && shape is not null;
-        if (broad) templates = catalog.Templates.Where(t => ShapeMatches(shape!, t.Class)).ToList();
-        var unrestricted = templates;
-        templates = SourceTemplates(source.FormKey, templates, catalog);
+        var (unrestricted, broad) = ExactOrBroadTemplates(profile.BroadUnmatchedDistribution, cls, shape, catalog);
+        var templates = SourceTemplates(source.FormKey, unrestricted, catalog);
         if (templates is not { Count: > 0 }) { Skip(unrestricted is { Count: > 0 } ? AuthorListLeavesNoTemplate : "no compatible enchantment templates"); return; }
 
         var selected = (broad ? TemplatesForBroadSource(source, templates, catalog)
@@ -215,8 +209,7 @@ public static partial class PatcherEngine
         var count = 0;
         foreach (var (group, tier) in selectedTiers)
         {
-            var template = group.OrderBy(t => profile.EnchantmentProviderPlugins.FindIndex(p =>
-                    p.Equals(t.Enchantment.ModKey.FileName.String, StringComparison.OrdinalIgnoreCase)))
+            var template = group.OrderBy(t => ProviderRank(profile, t.Enchantment.ModKey))
                 .ThenBy(t => t.Item.FormKey).First();
             var existing = inventory.FirstOrDefault(i => OrdinaryEquipment(i, catalog.KeywordNames)
                 && TryEnchantment(i, out var enchantment)

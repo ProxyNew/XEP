@@ -11,17 +11,19 @@ public static partial class PatcherEngine
     // modeled. Unknown bits are not evidence for widening an availability route.
     private static bool KnownSelectionFlags(ILeveledItemGetter list) => ((int)list.Flags & ~15) == 0;
     private static bool GivesAllEntries(ILeveledItemGetter list) => ((int)list.Flags & 7) is 4 or 5;
+    // A stored level of 32768 or more (negative as Int16) starts above any real level.
     private static short SelectionEntryMinimum(ILeveledItemGetter list, short level)
-        => GivesAllEntries(list) ? (short)1 : level;
+        => GivesAllEntries(list) ? (short)1 : level < 0 ? short.MaxValue : level;
     private static bool HasHighestEligibleCutoff(ILeveledItemGetter list)
         => !GivesAllEntries(list) && ((int)list.Flags & 1) == 0;
+    // The game stores entry levels as unsigned 16-bit values; Mutagen reads them as Int16.
+    // The queried level stays signed: an entry stored at 32768 or more is cut off by every row.
     private static int SelectionEntryMaximum(ILeveledItemGetter list, short level, IEnumerable<short>? additionalLevels = null)
     {
         if (!HasHighestEligibleCutoff(list)) return ushort.MaxValue;
         var maximum = (int)ushort.MaxValue;
-        foreach (var row in LeveledEntryRows(list)) if (row.Level > level) maximum = Math.Min(maximum, row.Level - 1);
-        if (additionalLevels is not null)
-            foreach (var candidate in additionalLevels) if (candidate > level) maximum = Math.Min(maximum, candidate - 1);
+        foreach (var row in LeveledEntryRows(list)) if ((ushort)row.Level > level) maximum = Math.Min(maximum, (ushort)row.Level - 1);
+        foreach (var candidate in additionalLevels ?? []) if ((ushort)candidate > level) maximum = Math.Min(maximum, (ushort)candidate - 1);
         return maximum;
     }
 

@@ -8,5 +8,5 @@ public partial class ProfileBrowserWindow : Window
     {
         UiTheme.Attach(this); InitializeComponent(); Profiles.ItemsSource = profiles; Profiles.SelectedItem = current;
     }
-    private void Select(object sender, RoutedEventArgs e) { if (SelectedProfile is not null) DialogResult = true; }
+    internal void Select(object sender, RoutedEventArgs e) { if (SelectedProfile is not null) DialogResult = true; }
 }

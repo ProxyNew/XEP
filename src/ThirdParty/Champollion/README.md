@@ -36,8 +36,8 @@ Missing tools retain the existing warning and conservative script protection.
 Cache identities include the actual executable's SHA256, so replacement tools
 do not reuse the old tool's decompilation results.
 
-Builds copy this folder locally and publishing keeps it outside the single-file
-XEP executable. Builds and the app do not download dependencies from GitHub.
+Builds copy this folder locally and publishing keeps it as a separate folder beside
+the XEP executable. Builds and the app do not download dependencies from GitHub.
 To update it, replace the executable and source from a reviewed upstream release,
 update these pins/notices and validate real PEX decompilation, affected script
 consumers and published-folder contents.

@@ -32,8 +32,6 @@ public sealed record LlosInputReport(string Status, string Version, string DllSh
 {
     public string DllFileName { get; init; } = "";
     internal IReadOnlyList<string> Information { get; init; } = [];
-    internal IReadOnlyDictionary<string, ReadOnlyMemory<byte>> CapturedBytes { get; init; }
-        = new Dictionary<string, ReadOnlyMemory<byte>>();
     // Plugin keyword membership for keyword-rule targets, in each record's keyword
     // order (native iterates a form's keywords in order).
     internal IReadOnlyDictionary<FormKey, FormKey[]> KeywordOrder { get; init; } = new Dictionary<FormKey, FormKey[]>();
@@ -53,36 +51,59 @@ internal static class LlosInputs
     internal const string SourceMatchedDll = "9947D5AA6CC9BC61C2EDFDE0005C2BE62EB558C5032DA372D53EECA7E242E423";
     private static readonly string[] KnownKeys = ["Target", "Insert", "Protocol", "Count", "Level", "Chance", "UseAll"];
 
-    public static LlosInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods,
-        Func<IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>>? winners = null,
-        NativeFormResolver? sharedResolver = null)
+    // The simple form for fixtures: builds the scan environment for one Data folder.
+    public static LlosInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods)
+        => Capture(FrameworkInputs.Create(dataFolder, mods));
+
+    internal static LlosInputReport Capture(FrameworkInputs inputs)
     {
         using var timing = PhaseTiming.Measure("llos.capture");
-        if (string.IsNullOrWhiteSpace(dataFolder) || !Directory.Exists(dataFolder)) return Empty();
+        if (!inputs.Exists) return Empty();
         var notes = new DiagnosticMessages();
-        var bytes = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal);
         var incomplete = false;
-        var plugins = Path.Combine(dataFolder, "SKSE", "Plugins");
         string? dll = null;
-        var configs = new List<(string Physical, string Native, string Relative)>();
+        var configs = new List<(ListedEntry Entry, string Native, string Relative)>();
         using (PhaseTiming.Measure("llos.discovery"))
-        try
         {
             // The DLL's name carries a load-order prefix (w_) in the release; any
             // prefix loads the same plugin, so match the suffix only.
-            if (Directory.Exists(plugins))
-                dll = Directory.EnumerateFiles(plugins, "*LeveledListObjectSwapper.dll").Order(StringComparer.OrdinalIgnoreCase).FirstOrDefault();
-            // Pinned LoadData: non-recursive Data\ and Data\LLOS, exact ".ini"
-            // extension, case-sensitive "_LLOS" anywhere in the path string, then
-            // a byte-ordinal sort of those strings across both folders.
-            Discover(dataFolder, @"Data\", "");
-            var llos = Path.Combine(dataFolder, "LLOS");
-            if (Directory.Exists(llos)) Discover(llos, @"Data\LLOS\", "LLOS/");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            incomplete = true;
-            notes.Add("LLOS discovery incomplete: " + ex.Message);
+            // A failed SKSE\Plugins listing stops discovery before Data, as the sorted DLL
+            // enumeration did; a failed Data listing keeps the entries read before the error.
+            if (inputs.PluginsError is { } pluginsError)
+            {
+                incomplete = true;
+                notes.Add("LLOS discovery incomplete: " + pluginsError);
+            }
+            else
+            {
+                dll = inputs.PluginFilesEndingWith("LeveledListObjectSwapper.dll").FirstOrDefault()?.Path;
+                // Pinned LoadData: non-recursive Data\ and Data\LLOS, exact ".ini"
+                // extension, case-sensitive "_LLOS" anywhere in the path string, then
+                // a byte-ordinal sort of those strings across both folders.
+                Discover(inputs.Data, @"Data\", "");
+                if (inputs.DataError is { } dataError)
+                {
+                    incomplete = true;
+                    notes.Add("LLOS discovery incomplete: " + dataError);
+                }
+                else if (inputs.DataDirectory("LLOS") is { } llosDirectory)
+                {
+                    if (llosDirectory.IsLink)
+                    {
+                        incomplete = true;
+                        notes.Add("LLOS configuration directory is a link; discovery was not followed.");
+                    }
+                    else
+                    {
+                        Discover(FrameworkFiles.List(llosDirectory.Path, out var llosError), @"Data\LLOS\", "LLOS/");
+                        if (llosError is not null)
+                        {
+                            incomplete = true;
+                            notes.Add("LLOS discovery incomplete: " + llosError);
+                        }
+                    }
+                }
+            }
         }
         if (dll is null && configs.Count == 0) return Empty();
 
@@ -91,9 +112,9 @@ internal static class LlosInputs
         if (dll is not null)
             try
             {
-                using var stream = File.OpenRead(dll);
-                dllHash = Convert.ToHexString(SHA256.HashData(stream));
-                version = SksePluginVersion.Read(dll) ?? "unknown";
+                var dllIdentity = DllIdentity.ReadSkse(dll);
+                dllHash = dllIdentity.Sha256;
+                version = dllIdentity.Version;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -101,26 +122,25 @@ internal static class LlosInputs
                 notes.Add("Could not read the LLOS DLL: " + ex.Message);
             }
 
-        var resolver = sharedResolver ?? new NativeFormResolver(mods, winners ?? (() => PatcherEngine.LoadOrderWinners(mods)));
-        var editorIds = EditorIdSupport(plugins);
-        var mergeMapper = File.Exists(Path.Combine(plugins, "MergeMapper.dll"));
+        var resolver = inputs.Resolver;
+        var editorIds = inputs.EditorIdSupport;
+        var mergeMapper = inputs.PluginFile("MergeMapper.dll") is not null;
         var files = new List<LlosFile>();
         var stopped = false;
         var index = 0;
-        foreach (var (physical, native, relative) in configs.OrderBy(c => c.Native, StringComparer.Ordinal))
+        foreach (var (entry, native, relative) in configs.OrderBy(c => c.Native, StringComparer.Ordinal))
         {
             try
             {
-                if ((File.GetAttributes(physical) & FileAttributes.Directory) != 0)
+                if (entry.IsDirectory)
                 {
                     // directory_iterator yields directories too; LoadFile then fails.
                     files.Add(new(relative, native, "", "not-a-file", []));
                     continue;
                 }
-                if ((File.GetAttributes(physical) & FileAttributes.ReparsePoint) != 0)
+                if (entry.IsLink)
                     throw new IOException("File link was not followed: " + relative);
-                var content = File.ReadAllBytes(physical);
-                bytes.Add(relative, content);
+                var content = File.ReadAllBytes(entry.Path);
                 using var parsing = PhaseTiming.Measure("llos.parse");
                 var rules = new List<LlosRule>();
                 foreach (var section in Ini.Read(content))
@@ -130,7 +150,7 @@ internal static class LlosInputs
                     rules.Add(rule);
                     index++;
                 }
-                files.Add(new(relative, native, Hash(content), dll is null ? "missing-dll" : "active", rules.AsReadOnly()));
+                files.Add(new(relative, native, FrameworkFiles.Hash(content), dll is null ? "missing-dll" : "active", rules.AsReadOnly()));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -140,7 +160,7 @@ internal static class LlosInputs
             }
         }
 
-        var release = ReleaseStatus(version, dllHash);
+        var release = Release.Status(version, dllHash);
         var status = incomplete ? "incomplete-capture" : dll is null ? "missing-dll" : release;
         notes.AddDiagnostic(dll is null
             ? "LLOS configuration was found without a projected LLOS DLL; nothing is applied natively and no LLOS distribution is imported."
@@ -176,10 +196,11 @@ internal static class LlosInputs
         if (keywordTargets.Count > 0)
             try
             {
-                foreach (var kid in Directory.EnumerateFiles(dataFolder, "*_KID.ini").Order(StringComparer.OrdinalIgnoreCase))
+                if (inputs.DataError is { } listing) throw new IOException(listing);
+                foreach (var kid in inputs.DataFilesEndingWith("_KID.ini"))
                 {
-                    var content = File.ReadAllBytes(kid);
-                    kidIdentity += $"\nkid={Path.GetFileName(kid)}|{Hash(content)}";
+                    var content = File.ReadAllBytes(kid.Path);
+                    kidIdentity += $"\nkid={kid.Name}|{FrameworkFiles.Hash(content)}";
                     // KID: `<key> = <keyword>|<type>|...`; KID reads every value of the
                     // file whatever its key, and the first field names the distributed
                     // keyword by EditorID or 0xID~Plugin.
@@ -194,7 +215,7 @@ internal static class LlosInputs
                         {
                             var matches = tilde > 0
                                 ? resolver.TryGetPlugin(distributed[(tilde + 1)..].Trim(), out var plugin) && keyword.ModKey == plugin.ModKey
-                                    && UnsignedLong(distributed[..tilde], 16, out _) == keyword.ID
+                                    && NativeNumbers.UnsignedLong(distributed[..tilde], 16) == keyword.ID
                                 : resolver.Winner(keyword)?.EditorID is { Length: > 0 } name && name.Equals(distributed, StringComparison.OrdinalIgnoreCase);
                             if (matches) runtimeKeywords.Add(keyword);
                         }
@@ -211,37 +232,25 @@ internal static class LlosInputs
         var dllName = dll is null ? "" : Path.GetFileName(dll);
         var identity = $"llos-capture-v3\n{Source}\n{status}\n{version}\n{dllHash}\n{dllName}\neditorids={editorIds}\nmergemapper={mergeMapper}\n" +
             string.Join('\n', files.Select(f => $"{f.NativePath}|{f.Sha256}|{f.Status}")) + kidIdentity;
-        return new(status, version, dllHash, Source, Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
-        { DllFileName = dllName, Information = notes.Information, CapturedBytes = bytes.AsReadOnly(), KeywordOrder = keywordOrder, RuntimeKeywords = runtimeKeywords };
+        return new(status, version, dllHash, Source, FrameworkFiles.Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
+        { DllFileName = dllName, Information = notes.Information, KeywordOrder = keywordOrder, RuntimeKeywords = runtimeKeywords };
 
-        void Discover(string directory, string prefix, string relativePrefix)
+        void Discover(IReadOnlyList<ListedEntry> entries, string prefix, string relativePrefix)
         {
-            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0 && relativePrefix.Length > 0)
+            foreach (var entry in entries)
             {
-                incomplete = true;
-                notes.Add("LLOS configuration directory is a link; discovery was not followed.");
-                return;
-            }
-            foreach (var path in Directory.EnumerateFileSystemEntries(directory))
-            {
-                var name = Path.GetFileName(path);
-                var native = prefix + name;
-                if (NativeExtension(name) != ".ini" || !native.Contains("_LLOS", StringComparison.Ordinal)) continue;
-                if (name.Any(c => c > 0x7F))
-                    notes.Add($"LLOS {relativePrefix}{name}: non-ASCII file name; native ordering and path conversion are unverified.");
-                configs.Add((path, native, relativePrefix + name));
+                var native = prefix + entry.Name;
+                if (NativeExtension(entry.Name) != ".ini" || !native.Contains("_LLOS", StringComparison.Ordinal)) continue;
+                if (entry.Name.Any(c => c > 0x7F))
+                    notes.Add($"LLOS {relativePrefix}{entry.Name}: non-ASCII file name; native ordering and path conversion are unverified.");
+                configs.Add((entry, native, relativePrefix + entry.Name));
             }
         }
     }
 
-    // Framework version acceptance: the verified build silently, its major
-    // version with a label, any other or unreadable major with a warning.
-    internal static string ReleaseStatus(string version, string dllHash)
-        => version == "1.3.0.0" && dllHash == SourceMatchedDll ? "source-matched-1.3.0"
-            : SkyPatcherInputs.Major(version) == 1 ? "accepted-major-1" : "accepted-other-major";
+    internal static readonly FrameworkRelease Release = new("1.3.0.0", SourceMatchedDll, 1, "1.3.0");
 
     private static LlosInputReport Empty() => new("absent", "", "", Source, "", [], []);
-    private static string Hash(byte[] content) => Convert.ToHexString(SHA256.HashData(content));
 
     // std::filesystem::path::extension: from the last dot of the file name,
     // except a name whose only dot leads it (".ini" has no extension).
@@ -249,21 +258,6 @@ internal static class LlosInputs
     {
         var dot = name.LastIndexOf('.');
         return dot <= 0 || name is "." or ".." ? "" : name[dot..];
-    }
-
-    // Shared with CID capture: both read po3_Tweaks' native EditorID cache.
-    internal static string EditorIdSupport(string plugins)
-    {
-        try
-        {
-            var dll = Path.Combine(plugins, "po3_Tweaks.dll");
-            var ini = Path.Combine(plugins, "po3_Tweaks.ini");
-            if (!File.Exists(dll) || !File.Exists(ini)) return "unavailable";
-            using var stream = File.OpenRead(dll);
-            var hash = Convert.ToHexString(SHA256.HashData(stream));
-            return SkyPatcherInputs.EditorIdDependencySupported(hash, File.ReadAllText(ini)) ? "available" : "unavailable";
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return "unavailable"; }
     }
 
     private static LlosRule Skipped(int index, Ini.Section section)
@@ -335,7 +329,7 @@ internal static class LlosInputs
     // Utility::AcquireForm: "hex~Plugin" when a nonterminal tilde is present,
     // otherwise an EditorID. A failed FormID lookup falls back to an empty
     // EditorID and therefore fails.
-    private static LlosReference Reference(string field, string identifier, NativeFormResolver resolver, string editorIds, bool mergeMapper)
+    internal static LlosReference Reference(string field, string identifier, NativeFormResolver resolver, string editorIds, bool mergeMapper)
     {
         LlosReference Result(string status, IMajorRecordGetter? record = null, IReadOnlyList<IMajorRecordGetter>? candidates = null)
             => new(field, identifier, status, record?.FormKey.ToString(), status == "resolved" ? NativeType(record!) : 0)
@@ -347,15 +341,12 @@ internal static class LlosInputs
         var tilde = identifier.IndexOf('~');
         if (tilde >= 0 && tilde + 1 < identifier.Length)
         {
-            var id = UnsignedLong(identifier[..tilde], 16, out _);
-            var name = identifier[(tilde + 1)..];
-            if (!resolver.TryGetPlugin(name, out var plugin))
-                return Result(mergeMapper ? "merge-mapping-unavailable" : "missing-plugin");
+            var id = NativeNumbers.UnsignedLong(identifier[..tilde], 16);
             // CommonLib composes the plugin's runtime prefix with the raw value;
             // a value outside the plugin's local range is not a stable identity.
-            if (id > (plugin.IsSmallMaster ? 0xFFFu : 0xFFFFFFu)) return Result("outside-local-range");
-            record = resolver.Winner(new FormKey(plugin.ModKey, id));
-            if (record is null) return Result("missing-record");
+            var (failure, located) = FormLocator.Locate(resolver, identifier[(tilde + 1)..], id, FormIdRange.Refuse, MergeMapperHandling.MissingPlugin, mergeMapper);
+            if (failure is not null) return Result(failure);
+            record = located!;
         }
         else
         {
@@ -434,7 +425,7 @@ internal static class LlosInputs
     {
         overflow = false;
         var i = 0;
-        while (i < text.Length && IsSpace(text[i])) i++;
+        while (i < text.Length && NativeNumbers.IsSpace(text[i])) i++;
         var negative = i < text.Length && text[i] == '-';
         if (i < text.Length && text[i] is '+' or '-') i++;
         var start = i;
@@ -449,32 +440,6 @@ internal static class LlosInputs
         return (uint)(negative ? unchecked(0 - value) : value);
     }
 
-    // std::strtoul (32-bit unsigned long on Windows): never throws; overflow
-    // saturates, a sign negates modulo 2^32 and no digits yield zero.
-    internal static uint UnsignedLong(string text, int radix, out bool digits)
-    {
-        var i = 0;
-        while (i < text.Length && IsSpace(text[i])) i++;
-        var negative = i < text.Length && text[i] == '-';
-        if (i < text.Length && text[i] is '+' or '-') i++;
-        if (radix == 16 && i + 2 < text.Length && text[i] == '0' && text[i + 1] is 'x' or 'X' && Uri.IsHexDigit(text[i + 2])) i += 2;
-        var start = i;
-        ulong value = 0;
-        var saturated = false;
-        for (; i < text.Length; i++)
-        {
-            var c = text[i];
-            int digit = c is >= '0' and <= '9' ? c - '0' : radix == 16 && Uri.IsHexDigit(c) ? char.ToUpperInvariant(c) - 'A' + 10 : -1;
-            if (digit < 0) break;
-            value = value * (ulong)radix + (ulong)digit;
-            if (value > uint.MaxValue) saturated = true;
-        }
-        digits = i > start;
-        if (!digits) return 0;
-        if (saturated) return uint.MaxValue;
-        return negative ? unchecked((uint)(0 - (uint)value)) : (uint)value;
-    }
-
     // Utility::AcquireRangeData: "a~b" (nonterminal tilde) or one value; each
     // is clamped through a signed cast to [1,16384]; empty keeps the default 1.
     internal static (ushort Min, ushort Max) Range(string text)
@@ -484,11 +449,11 @@ internal static class LlosInputs
         var tilde = text.IndexOf('~');
         if (tilde >= 0 && tilde + 1 < text.Length)
         {
-            var a = UnsignedLong(text[..tilde], 10, out _);
-            var b = UnsignedLong(text[(tilde + 1)..], 10, out _);
+            var a = NativeNumbers.UnsignedLong(text[..tilde], 10);
+            var b = NativeNumbers.UnsignedLong(text[(tilde + 1)..], 10);
             return (Clamp(Math.Min(a, b)), Clamp(Math.Max(a, b)));
         }
-        var value = Clamp(UnsignedLong(text, 10, out _));
+        var value = Clamp(NativeNumbers.UnsignedLong(text, 10));
         return (value, value);
     }
 
@@ -498,7 +463,7 @@ internal static class LlosInputs
     {
         overflow = unknownSyntax = false;
         var i = 0;
-        while (i < text.Length && IsSpace(text[i])) i++;
+        while (i < text.Length && NativeNumbers.IsSpace(text[i])) i++;
         var body = text[i..];
         var sign = body.StartsWith('-') ? -1f : 1f;
         var unsigned = body.TrimStart('+', '-');
@@ -513,7 +478,6 @@ internal static class LlosInputs
         return sign * (float)value;
     }
 
-    private static bool IsSpace(char c) => c is ' ' or '\t' or '\n' or '\v' or '\f' or '\r';
 
     // CSimpleIni (SetUnicode, SetMultiKey, no multiline/quotes): ';'/'#' line
     // comments, "[name]" headers, "key=value" with trimmed whitespace, keys
@@ -572,11 +536,10 @@ internal static class LlosInputs
 // FileVersion resource, so this is the only embedded release number.
 internal static class SksePluginVersion
 {
-    public static string? Read(string path)
+    public static string? Read(byte[] image)
     {
         try
         {
-            var image = File.ReadAllBytes(path);
             uint U32(int at) => BitConverter.ToUInt32(image, at);
             var pe = (int)U32(0x3C);
             if (U32(pe) != 0x4550) return null;
@@ -617,6 +580,6 @@ internal static class SksePluginVersion
             }
             return null;
         }
-        catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException or IOException) { return null; }
+        catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException) { return null; }
     }
 }

@@ -6,7 +6,7 @@ public static partial class PatcherEngine
 {
     // Frozen template order is significant. Lookups preserve it within each
     // material/group; only destinations are sorted, as in the original query.
-    private sealed class SpecializedTemplateIndex
+    internal sealed class SpecializedTemplateIndex
     {
         private readonly ILookup<(string Material, string Group), EnchantedTemplate> matching;
         private readonly ILookup<string, EnchantedTemplate> expandable;

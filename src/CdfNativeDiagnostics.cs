@@ -41,7 +41,7 @@ internal static partial class CdfInputs
     }
 
     private static (string Disposition, CdfGuards? Guards, IReadOnlyList<CdfChange> Changes) DescribeNative(
-        JsonElement rule, Resolver resolver, List<CdfReference> references, List<string> notes, ref bool stopped)
+        JsonElement rule, NativeFormResolver resolver, List<CdfReference> references, List<string> notes, ref bool stopped)
     {
         if (stopped) return ("skipped-file-tail", null, []);
         if (rule.ValueKind is not (JsonValueKind.Object or JsonValueKind.Null))

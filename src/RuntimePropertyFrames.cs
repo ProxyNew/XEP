@@ -9,7 +9,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record RuntimeQuestDispatch(FormKey Quest, string View, string Method, string CallerIdentity);
+    internal sealed record RuntimeQuestDispatch(FormKey Quest, string View, string Method, string CallerIdentity);
     // This frame covers winning attached scripts and observed VMAD-bound
     // callers. It is not a closed-world claim about arbitrary external code.
     // A slice scope (script distribution only, ADR 0008/0009) analyses custom
@@ -69,10 +69,10 @@ public static partial class PatcherEngine
             foreach (var aliasProperty in caller.AliasBindings.Keys.Where(_ => slice is null))
                 for (var k = 0; k < syntax.Lines.Count; k++)
                 {
-                    var raw = syntax.Lines[k]; var line = syntax.MaskedLines[k];
+                    var line = syntax.MaskedLines[k];
                     if (Regex.IsMatch(line, @"(?i)\b" + Regex.Escape(aliasProperty) + @"\b") && !IsPropertyDeclaration(line, aliasProperty))
                         if (!NativeAliasFrameUse(line, caller, frame, catalog))
-                            return FrameFailure("VMAD alias-property capability use is outside the bounded frame", caller, aliasProperty, raw);
+                            return new("VMAD alias-property capability use is outside the bounded frame", true);
                 }
             foreach (var array in caller.ArrayBindings.Where(p => p.Value.Any(v => v.Alias != -1)))
             {
@@ -81,10 +81,10 @@ public static partial class PatcherEngine
                     return new("alias array has mixed, invalid or unstable typed bindings", true);
                 for (var k = 0; slice is null && k < syntax.Lines.Count; k++)
                 {
-                    var raw = syntax.Lines[k]; var line = syntax.MaskedLines[k];
+                    var line = syntax.MaskedLines[k];
                     if (Regex.IsMatch(line, @"(?i)\b" + Regex.Escape(array.Key) + @"\b") && !IsPropertyDeclaration(line, array.Key)
                         && !NativeAliasFrameUse(line, caller, frame, catalog))
-                        return FrameFailure("alias array reference escapes or has an unproved use", caller, array.Key, raw);
+                        return new("alias array reference escapes or has an unproved use", true);
                 }
             }
             if (slice is null && caller.Arrays.Values.Any(keys => keys.Any(questKeys.Contains)))
@@ -107,9 +107,9 @@ public static partial class PatcherEngine
                 .Concat(caller.Objects.Where(p => slice is null && catalog.RuntimeFormLists.ContainsKey(p.Value) && ListCapability(p.Value)).Select(p => p.Key)))
                 for (var k = 0; k < syntax.Lines.Count; k++)
                 {
-                    var raw = syntax.Lines[k]; var line = syntax.MaskedLines[k];
+                    var line = syntax.MaskedLines[k];
                     if (Regex.IsMatch(line, @"(?i)\b" + Regex.Escape(property) + @"\b") && !IsPropertyDeclaration(line, property))
-                        return FrameFailure("collection/array leveled-list capability use is outside the bounded frame", caller, property, raw);
+                        return new("collection/array leveled-list capability use is outside the bounded frame", true);
                 }
             var references = new Dictionary<string, RuntimeQuestView>(StringComparer.OrdinalIgnoreCase);
             foreach (var p in caller.Objects.Where(p => questKeys.Contains(p.Value)))
@@ -154,7 +154,7 @@ public static partial class PatcherEngine
                     var rawLine = body.Lines[k]; var maskedLine = body.MaskedLines[k];
                     var raw = rawLine;
                     var implicitProblem = ImplicitRuntimeFrameCalls(raw, maskedLine, caller, f, owner, frame, catalog);
-                    if (implicitProblem is not null) return FrameFailure(implicitProblem + $" in {caller.Label}.{f.Name}", caller, "self", raw, f.Name);
+                    if (implicitProblem is not null) return new(implicitProblem + $" in {caller.Label}.{f.Name}", true);
                     if (owningAlias)
                     {
                         // An alias can acquire only its own quest here. Every
@@ -189,7 +189,7 @@ public static partial class PatcherEngine
                             if (aliases.Contains(reference.Key) && Regex.IsMatch(line[(use.Index + use.Length)..], @"^\s*(?:[+\-*/]?=|\[)"))
                                 return new("local quest alias is rebound/indexed", true);
                             var problem = QuestReferenceUse(raw, line, use, reference.Key, reference.Value.Type, caller, f, owner, frame, catalog, reference.Value.Quest);
-                            if (problem is not null) return FrameFailure(problem + $" in {caller.Label}.{f.Name}", caller, reference.Key, rawLine, f.Name);
+                            if (problem is not null) return new(problem + $" in {caller.Label}.{f.Name}", true);
                         }
                 }
             }
@@ -260,8 +260,8 @@ public static partial class PatcherEngine
     private static string? AutoPropertyType(string text, string name) => TextSyntax(text).AutoPropertyType(name);
     private static bool IsPropertyDeclaration(string line, string name) => Regex.IsMatch(line,
         @"(?i)^\s*\w+(?:\[\])?\s+property\s+" + Regex.Escape(name) + @"(?:\s+auto(?:readonly)?(?:\s+hidden)?)?\s*$");
-    private static bool HasParameter(ScriptFunction f, string name) => TextSyntax(f.Parameters).HasParameter(name);
-    private static bool HasLocalShadow(ScriptFunction f, string name) => HasParameter(f, name) || TextSyntax(f.Body).DeclaresLocal(name);
+    internal static bool HasParameter(ScriptFunction f, string name) => TextSyntax(f.Parameters).HasParameter(name);
+    internal static bool HasLocalShadow(ScriptFunction f, string name) => HasParameter(f, name) || TextSyntax(f.Body).DeclaresLocal(name);
     private static bool StableAutoProperty(ScriptInstance i, string name) => i.Text is { } text && AutoPropertyType(text, name) is not null
         && !TextSyntax(text).Rebinds(name)
         && !i.Functions.Any(f => HasLocalShadow(f, name));
@@ -336,7 +336,7 @@ public static partial class PatcherEngine
         if (Regex.IsMatch(suffix, @"(?i)^\s*(?:==|!=)\s*none\b")) return null;
         var stringUse = Regex.Match(raw, @"(?i)^\s*debug\s*\.\s*(Trace|TraceStack)\s*\(\s*" + Regex.Escape(reference)
             + @"\s+as\s+string(?:\s*\+\s*""(?:\\.|[^""\\])*"")*\s*,\s*[0-9]+\s*\)\s*$");
-        if (stringUse.Success && !SymbolShadowed(caller, function, "Debug")
+        if (stringUse.Success && !SymbolShadowed(caller, "Debug")
             && NativeFrameContract(catalog, "Debug", stringUse.Groups[1].Value, "", ["String", "Int"], true)) return null;
         return "bound quest reference cast/alias/escape is unproved";
     }
@@ -426,7 +426,7 @@ public static partial class PatcherEngine
         }
         return null;
     }
-    private static bool SymbolShadowed(ScriptInstance i, ScriptFunction? f, string name) => i.Objects.ContainsKey(name) || i.Arrays.ContainsKey(name)
+    private static bool SymbolShadowed(ScriptInstance i, string name) => i.Objects.ContainsKey(name) || i.Arrays.ContainsKey(name)
         || Regex.IsMatch(TextSyntax(i.Text!).Masked, @"(?im)^\s*\w+(?:\[\])?\s+(?:property\s+)?" + Regex.Escape(name) + @"\b")
         || i.Functions.Any(f => HasParameter(f, name));
 
@@ -437,12 +437,12 @@ public static partial class PatcherEngine
         if (!match.Success || !NativeFrameContract(catalog, "ObjectReference", "AddItem", "", ["Form", "Int", "Bool"], false)
             || !BaseHasParentWithoutMethod(catalog, "Actor", "ObjectReference", "AddItem")) return false;
         var receiver = match.Groups["receiver"].Value;
-        if (receiver.Contains('.')) return !SymbolShadowed(i, f, "Game") && NativeFrameContract(catalog, "Game", "GetPlayer", "Actor", [], true);
+        if (receiver.Contains('.')) return !SymbolShadowed(i, "Game") && NativeFrameContract(catalog, "Game", "GetPlayer", "Actor", [], true);
         var type = AutoPropertyType(i.Text!, receiver);
         if (!(type?.Equals("Actor", StringComparison.OrdinalIgnoreCase) == true || type?.Equals("ObjectReference", StringComparison.OrdinalIgnoreCase) == true)
             || !StableAutoProperty(i, receiver) || f is not null && HasLocalShadow(f, receiver) || !i.Objects.TryGetValue(receiver, out var key)) return false;
-        catalog.RuntimeActorReferences ??= catalog.Mods.SelectMany(m => m.EnumerateMajorRecords<IPlacedNpcGetter>()).GroupBy(r => r.FormKey)
-            .Where(g => !g.Last().IsDeleted && !g.Last().Base.IsNull).ToDictionary(g => g.Key, g => true);
+        catalog.RuntimeActorReferences ??= RuntimeRecordWinners(catalog).Values.Select(w => w.Record).OfType<IPlacedNpcGetter>()
+            .Where(r => !r.IsDeleted && !r.Base.IsNull).ToDictionary(r => r.FormKey, r => true);
         // Currently only placed actors; ObjectReference properties bound to
         // other placed record kinds remain unsupported.
         return catalog.RuntimeActorReferences.ContainsKey(key);

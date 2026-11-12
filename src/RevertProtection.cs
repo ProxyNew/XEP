@@ -15,7 +15,7 @@ public static partial class PatcherEngine
         && owners.All(p => p != (unlock.OwnerQuest.IsNull ? unlock.Quest : unlock.OwnerQuest).ModKey)
         && !catalog.OtherRuntimeMutations.Contains(target) && !catalog.RuntimeAddPayloadProblems.ContainsKey(target);
 
-    private static string? RevertSwitchProblem(FormKey target, Catalog catalog)
+    internal static string? RevertSwitchProblem(FormKey target, Catalog catalog)
     {
         if (catalog.NativeLists?.HasBroadRules == true)
             return "SkyPatcher broad selectors have no verified selective Revert-switch output composition";
@@ -63,7 +63,7 @@ public static partial class PatcherEngine
         return null;
     }
 
-    private static string? SwitchLevelProblem(ILeveledItemGetter list, RuntimePlacement[] routes)
+    internal static string? SwitchLevelProblem(ILeveledItemGetter list, RuntimePlacement[] routes)
     {
         if (routes.Any(r => r.Target.Count != 1) || routes.Select(r => r.Target.Level).Distinct().Count() != 1)
             return "one switch position requires a common insertion level and unit count";
@@ -96,7 +96,7 @@ public static partial class PatcherEngine
     // otherwise valid preview or generation to abort. This runs after every planner
     // has contributed its routes, because common levels, family/trigger limits and
     // final physical capacity are properties of the complete destination group.
-    private static void FinalizeProtectedRuntimePlacements(PlanningAdditions<VariantPlan> plans, Catalog catalog, int warningLimit)
+    internal static void FinalizeProtectedRuntimePlacements(PlanningAdditions<VariantPlan> plans, Catalog catalog)
     {
         // Returns the reservations when nothing was rejected, so they still apply.
         StaticCapacityReservations? RejectDirectOverflow()
@@ -229,7 +229,7 @@ public static partial class PatcherEngine
         return result;
     }
 
-    private static int RuntimeRecordCount(Catalog catalog)
+    internal static int RuntimeRecordCount(Catalog catalog)
     {
         var groups = RevertSwitchGroups(catalog);
         return catalog.RuntimePlacements.Count - groups.Values.Sum(r => r.Length)
@@ -245,7 +245,7 @@ public static partial class PatcherEngine
         routes.Select(r => r.Unlock).DistinctBy(u => (u.Quest, u.Stage, u.AtStart))
             .OrderBy(u => u.Quest).ThenBy(u => u.Stage).ThenBy(u => u.AtStart).ToArray();
 
-    private static List<ListImpact> RevertSwitchImpacts(List<ListImpact> impacts, Catalog catalog, int warningLimit)
+    internal static List<ListImpact> RevertSwitchImpacts(List<ListImpact> impacts, Catalog catalog, int warningLimit)
     {
         var result = impacts.ToDictionary(i => FormKey.Factory(i.FormKey));
         foreach (var target in RevertSwitchGroups(catalog).Keys)
@@ -263,7 +263,7 @@ public static partial class PatcherEngine
 
     // Allocate globals first and controllers last. All shared destination overrides
     // live in the final output plugin, just as the normal distribution writer does.
-    private static void WriteRevertSwitches(Catalog catalog, SkyrimMod[] patches,
+    internal static void WriteRevertSwitches(Catalog catalog, SkyrimMod[] patches,
         HashSet<uint>[] usedIds, HashSet<string> editorIds, Dictionary<FormKey, FormKey> remapped,
         ref int nextRecord, HashSet<FormKey> changedLists)
     {

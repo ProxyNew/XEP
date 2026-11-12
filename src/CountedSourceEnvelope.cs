@@ -11,13 +11,13 @@ public static partial class PatcherEngine
 {
     // These are exact static inventory paths, not the aggregated consumers of
     // MaterialSourceProofs. Entry positions distinguish repeated weighted edges.
-    private sealed record SourceRouteStep(FormKey List, int EntryIndex, FormKey Child,
+    internal sealed record SourceRouteStep(FormKey List, int EntryIndex, FormKey Child,
         short Level, short Count, ILeveledItemGetter Original);
-    private sealed record MerchantSourceRoute(FormKey Source, FormKey Container, int InventoryIndex,
+    internal sealed record MerchantSourceRoute(FormKey Source, FormKey Container, int InventoryIndex,
         IContainerEntryGetter SourceInventoryEntry, IReadOnlyList<SourceRouteStep> Steps,
         MaterialSourceProof Proof, string Identity);
 
-    private sealed record CountedSourceEnvelope(FormKey Source, FormKey KernelRoot,
+    internal sealed record CountedSourceEnvelope(FormKey Source, FormKey KernelRoot,
         IReadOnlyDictionary<FormKey, ILeveledItemGetter> Kernel,
         IReadOnlySet<FormKey> OtherItems,
         IReadOnlyList<SourceRouteStep> OuterSteps, short MinimumLevel, string Identity)
@@ -31,7 +31,7 @@ public static partial class PatcherEngine
 
     // Default false is intentional. Ordinary proofs and merchant fallback must
     // not accept structure until a destination planner can actually realize it.
-    private static List<MerchantSourceRoute> MerchantSourceRoutes(FormKey source, Catalog catalog,
+    internal static List<MerchantSourceRoute> MerchantSourceRoutes(FormKey source, Catalog catalog,
         ICollection<string> evidence, bool allowStructured = false)
     {
         using var timing = PhaseTiming.Measure("review.merchant-source-routes");
@@ -344,13 +344,13 @@ public static partial class PatcherEngine
     private sealed record CountedKernel(Dictionary<FormKey, ILeveledItemGetter> Kernel, HashSet<FormKey> OtherItems,
         short Minimum, string? Problem, string[] RuntimeDisjointEvidence, string NodeIdentities);
 
-    private static bool SourceListHasRuntimeMutation(FormKey key, Catalog catalog)
+    internal static bool SourceListHasRuntimeMutation(FormKey key, Catalog catalog)
         => catalog.RuntimeControlledLists.ContainsKey(key) || catalog.UnsafeAvailability.ContainsKey(key)
             || catalog.ScriptAddTargets.Contains(key) || catalog.ScriptUnlocks.ContainsKey(key)
             || catalog.UnresolvedScriptPayloads.Contains(key) || catalog.RuntimeAddPayloadProblems.ContainsKey(key)
             || UnclosedRuntimeHolderProblem([], catalog, key) is not null;
 
-    private static string? StaticSourceNodeProblem(ILeveledItemGetter list, Catalog catalog, bool allowFixedNone = false,
+    internal static string? StaticSourceNodeProblem(ILeveledItemGetter list, Catalog catalog, bool allowFixedNone = false,
         bool allowSpecialLoot = false, bool omittedGiveAllSibling = false)
     {
         using var timing = PhaseTiming.Count("review.merchant-source-node-safety");
@@ -426,59 +426,4 @@ public static partial class PatcherEngine
     }
     private static string SourceStepsIdentity(IEnumerable<SourceRouteStep> steps)
         => string.Join('>', steps.Select(s => $"{s.EntryIndex}:{s.Child}:{SourceNodeIdentity(s.Original)}"));
-
-    // Planning only; the ordinary writer must remap every planning key. This
-    // returns the controlled *new* family branch, never overrides source stock.
-    private static FormKey MaterializeCountedSourceEnvelope(FormKey source, FormKey family,
-        CountedSourceEnvelope envelope, Catalog catalog)
-    {
-        if (source != envelope.Source) throw new InvalidOperationException("Counted source envelope used for a different item.");
-        var copies = new Dictionary<FormKey, FormKey>();
-        var category = $"Counted merchant source {source}";
-        FormKey Add(string identity, ILeveledItemGetter? original = null, SourceRouteStep? projection = null)
-        {
-            var key = new FormKey(FallbackPlanningMod, (uint)(catalog.Fallbacks.Count + 1));
-            var node = new LeveledItem(key, SkyrimRelease.SkyrimSE)
-            {
-                EditorID = original is null ? "CountedSourceFlavor" : "CountedSource_" + original.EditorID,
-                Flags = original?.Flags ?? (LeveledItem.Flag)1,
-                ChanceNone = original?.ChanceNone ?? default,
-                Entries = original is null ? new() : new((projection is null
-                    ? original.Entries ?? [] : [original.Entries![projection.EntryIndex]]).Select(e => e.DeepCopy()))
-            };
-            if (original is not null) node.Global.SetTo(original.Global.FormKey);
-            catalog.AddList(key, node);
-            catalog.Fallbacks.Add(key, new(identity, category, node));
-            return key;
-        }
-        var flavor = Add($"counted-flavor|{envelope.Identity}|family:{family}");
-        ((LeveledItem)catalog.Lists[flavor]).Entries!.Add(new()
-        { Data = new() { Reference = new FormLink<IItemGetter>(family), Level = 1, Count = 1 } });
-        MarkEntryReferencesChanged(flavor, catalog);
-        // Explicit no-source result. Every original non-source item edge
-        // retains its exact slot/level/count, including highest-tier cutoffs.
-        var empty = envelope.OtherItems.Count == 0 ? default
-            : Add($"counted-empty|{envelope.Identity}|family:{family}");
-        FormKey Clone(FormKey original)
-        {
-            if (original == source) return flavor;
-            if (envelope.OtherItems.Contains(original)) return empty;
-            if (copies.TryGetValue(original, out var prior)) return prior;
-            var copy = Add($"counted-kernel|{envelope.Identity}|family:{family}|node:{original}", envelope.Kernel[original]);
-            copies[original] = copy;
-            foreach (var entry in ((LeveledItem)catalog.Lists[copy]).Entries!)
-                entry.Data!.Reference.SetTo(Clone(entry.Data.Reference.FormKey));
-            MarkEntryReferencesChanged(copy, catalog);
-            return copy;
-        }
-        var child = Clone(envelope.KernelRoot);
-        foreach (var step in envelope.OuterSteps)
-        {
-            var wrapper = Add($"counted-outer|{envelope.Identity}|family:{family}|{step.List}:{step.EntryIndex}", step.Original, step);
-            ((LeveledItem)catalog.Lists[wrapper]).Entries![0].Data!.Reference.SetTo(child);
-            MarkEntryReferencesChanged(wrapper, catalog);
-            child = wrapper;
-        }
-        return child;
-    }
 }

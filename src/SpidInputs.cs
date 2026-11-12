@@ -55,8 +55,6 @@ public sealed record SpidInputReport(string Status, string Version, string DllSh
     // Keyword Item Distributor is projected: it adds keywords XEP does not capture, so keyword
     // facts an NPC lacks in the plugins may still be present natively.
     public bool KeywordDistributor { get; init; }
-    internal IReadOnlyDictionary<string, ReadOnlyMemory<byte>> CapturedBytes { get; init; }
-        = new Dictionary<string, ReadOnlyMemory<byte>>();
 }
 
 // Input inventory bound to the pinned SPID 7.3.2 source (LookupConfigs, Parser,
@@ -78,40 +76,47 @@ internal static class SpidInputs
     private static readonly HashSet<string> Whitelist =
         ["Faction", "Class", "CombatStyle", "Race", "Outfit", "NPC", "VoiceType", "FormList", "Spell", "Armor", "Location", "Perk", "ActorCharacter"];
 
-    public static SpidInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods,
-        Func<IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>>? winners = null,
-        NativeFormResolver? sharedResolver = null)
+    // The simple form for fixtures: builds the scan environment for one Data folder.
+    public static SpidInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods)
+        => Capture(FrameworkInputs.Create(dataFolder, mods));
+
+    internal static SpidInputReport Capture(FrameworkInputs inputs)
     {
         using var timing = PhaseTiming.Measure("spid.capture");
-        if (string.IsNullOrWhiteSpace(dataFolder) || !Directory.Exists(dataFolder)) return Empty();
+        if (!inputs.Exists) return Empty();
         var notes = new DiagnosticMessages();
-        var bytes = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal);
         var incomplete = false;
-        var plugins = Path.Combine(dataFolder, "SKSE", "Plugins");
         string? dll = null;
-        var configs = new List<(string Physical, string Native, string Relative)>();
+        var configs = new List<(ListedEntry Entry, string Native, string Relative)>();
         using (PhaseTiming.Measure("spid.discovery"))
-        try
         {
-            if (Directory.Exists(plugins))
-                dll = Directory.EnumerateFiles(plugins, "*SpellPerkItemDistributor.dll").Order(StringComparer.OrdinalIgnoreCase).FirstOrDefault();
-            // Pinned distribution::get_configs: non-recursive Data\, exact ".ini",
-            // case-sensitive "_DISTR" anywhere in the path string, ordinal sort.
-            // Directory entries are returned too; LoadFile then fails.
-            foreach (var path in Directory.EnumerateFileSystemEntries(dataFolder))
+            // A failed SKSE\Plugins listing stops discovery before Data, as the sorted DLL
+            // enumeration did; a failed Data listing keeps the entries read before the error.
+            if (inputs.PluginsError is { } pluginsError)
             {
-                var name = Path.GetFileName(path);
-                var native = @"Data\" + name;
-                if (LlosInputs.NativeExtension(name) != ".ini" || !native.Contains("_DISTR", StringComparison.Ordinal)) continue;
-                if (name.Any(c => c > 0x7F))
-                    notes.Add($"SPID {name}: non-ASCII file name; native ordering and path conversion are unverified.");
-                configs.Add((path, native, name));
+                incomplete = true;
+                notes.Add("SPID discovery incomplete: " + pluginsError);
             }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            incomplete = true;
-            notes.Add("SPID discovery incomplete: " + ex.Message);
+            else
+            {
+                dll = inputs.PluginFilesEndingWith("SpellPerkItemDistributor.dll").FirstOrDefault()?.Path;
+                // Pinned distribution::get_configs: non-recursive Data\, exact ".ini",
+                // case-sensitive "_DISTR" anywhere in the path string, ordinal sort.
+                // Directory entries are returned too; LoadFile then fails.
+                foreach (var entry in inputs.Data)
+                {
+                    var native = @"Data\" + entry.Name;
+                    if (LlosInputs.NativeExtension(entry.Name) != ".ini" || !native.Contains("_DISTR", StringComparison.Ordinal)) continue;
+                    if (entry.Name.Any(c => c > 0x7F))
+                        notes.Add($"SPID {entry.Name}: non-ASCII file name; native ordering and path conversion are unverified.");
+                    configs.Add((entry, native, entry.Name));
+                }
+                if (inputs.DataError is { } dataError)
+                {
+                    incomplete = true;
+                    notes.Add("SPID discovery incomplete: " + dataError);
+                }
+            }
         }
         if (dll is null && configs.Count == 0) return Empty();
 
@@ -120,9 +125,9 @@ internal static class SpidInputs
         if (dll is not null)
             try
             {
-                using var stream = File.OpenRead(dll);
-                dllHash = Convert.ToHexString(SHA256.HashData(stream));
-                version = SksePluginVersion.Read(dll) ?? "unknown";
+                var dllIdentity = DllIdentity.ReadSkse(dll);
+                dllHash = dllIdentity.Sha256;
+                version = dllIdentity.Version;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -130,24 +135,22 @@ internal static class SpidInputs
                 notes.Add("Could not read the SPID DLL: " + ex.Message);
             }
 
-        var resolver = sharedResolver ?? new NativeFormResolver(mods, winners ?? (() => PatcherEngine.LoadOrderWinners(mods)));
-        var lookup = new Lookup(resolver, mods, LlosInputs.EditorIdSupport(plugins), File.Exists(Path.Combine(plugins, "MergeMapper.dll")));
+        var lookup = new Lookup(inputs.Resolver, inputs.EditorIdSupport, inputs.PluginFile("MergeMapper.dll") is not null);
         var captured = new List<(string Path, string Native, string Sha, string Status, List<SpidRule> Rules, int Rewrites, int Ignored)>();
         var index = 0;
         var rewritten = 0;
-        foreach (var (physical, native, relative) in configs.OrderBy(c => c.Native, StringComparer.Ordinal))
+        foreach (var (entry, native, relative) in configs.OrderBy(c => c.Native, StringComparer.Ordinal))
         {
             try
             {
-                if ((File.GetAttributes(physical) & FileAttributes.Directory) != 0)
+                if (entry.IsDirectory)
                 {
                     captured.Add((relative, native, "", "not-a-file", new List<SpidRule>(), 0, 0));
                     continue;
                 }
-                if ((File.GetAttributes(physical) & FileAttributes.ReparsePoint) != 0)
+                if (entry.IsLink)
                     throw new IOException("File link was not followed: " + relative);
-                var content = File.ReadAllBytes(physical);
-                bytes.Add(relative, content);
+                var content = File.ReadAllBytes(entry.Path);
                 using var parsing = PhaseTiming.Measure("spid.parse");
                 var sections = LlosInputs.Ini.Read(content);
                 // GetSection(""): only keys before the first header are read.
@@ -174,7 +177,7 @@ internal static class SpidInputs
                     }
                 }
                 rewritten += fileRewrites;
-                captured.Add((relative, native, Hash(content), dll is null ? "missing-dll" : "active", rules, fileRewrites, ignored));
+                captured.Add((relative, native, FrameworkFiles.Hash(content), dll is null ? "missing-dll" : "active", rules, fileRewrites, ignored));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -194,7 +197,7 @@ internal static class SpidInputs
             files.Add(new SpidFile(c.Path, c.Native, c.Sha, c.Status, list.AsReadOnly(), c.Rewrites, c.Ignored));
         }
 
-        var release = ReleaseStatus(version, dllHash);
+        var release = Release.Status(version, dllHash);
         var status = incomplete ? "incomplete-capture" : dll is null ? "missing-dll" : release;
         notes.AddDiagnostic(dll is null
             ? "SPID configuration was found without a projected SPID DLL; nothing is applied natively and no SPID distribution is imported."
@@ -231,21 +234,15 @@ internal static class SpidInputs
         var identity = $"spid-capture-v1\n{Source}\n{status}\n{version}\n{dllHash}\n{lookup.EditorIds}\nmerge-mapper={lookup.MergeMapper}\n" +
             string.Join('\n', files.Select(f => $"{f.NativePath}|{f.Sha256}|{f.Status}")) +
             // Resolution depends on the load order as well as the configuration bytes.
-            "\nrefs=" + Hash(Encoding.UTF8.GetBytes(string.Join('\n', all.SelectMany(r => r.References.Select(x =>
+            "\nrefs=" + FrameworkFiles.Hash(Encoding.UTF8.GetBytes(string.Join('\n', all.SelectMany(r => r.References.Select(x =>
                 $"{r.Index}|{x.Field}|{x.Identifier}|{x.Status}|{x.FormKey}")))));
-        return new(status, version, dllHash, Source, Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
-        { Information = notes.Information, CapturedBytes = bytes.AsReadOnly(), EditorIds = lookup.EditorIds,
-          KeywordDistributor = Directory.Exists(plugins) && Directory.EnumerateFiles(plugins, "*KeywordItemDistributor*.dll").Any() };
+        return new(status, version, dllHash, Source, FrameworkFiles.Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
+        { Information = notes.Information, EditorIds = lookup.EditorIds, KeywordDistributor = inputs.AnyPluginDllContaining("KeywordItemDistributor") };
     }
 
-    // Framework version acceptance: the verified AE build silently, its major
-    // version 7 with a label, any other or unreadable version with a warning.
-    internal static string ReleaseStatus(string version, string dllHash)
-        => version == SourceMatchedVersion && dllHash == SourceMatchedDll ? "source-matched-7.3.2"
-            : SkyPatcherInputs.Major(version) == 7 ? "accepted-major-7" : "accepted-other-major";
+    internal static readonly FrameworkRelease Release = new(SourceMatchedVersion, SourceMatchedDll, 7, "7.3.2");
 
     private static SpidInputReport Empty() => new("absent", "", "", Source, "", [], []);
-    private static string Hash(byte[] content) => Convert.ToHexString(SHA256.HashData(content));
 
     // detail::sanitize (non-VR), in pinned order.
     internal static string Sanitize(string value)
@@ -360,9 +357,9 @@ internal static class SpidInputs
                     family = prefix + GenericFamily(distributable.Status, record);
             }
             if (type == "Form" && found is null && references[0].Status != "created-keyword")
-                return Make(index, field, sanitized, parser, type, final, family, Unresolved(references[0].Status), references, diagnostics, count, form, strings, forms, levels, traits, chance, deterministic, null);
+                return Make(index, field, sanitized, parser, type, final, family, Unresolved(references[0].Status), references, diagnostics, count, strings, forms, levels, traits, chance, deterministic, null);
             if (!InScope(family))
-                return Make(index, field, sanitized, parser, type, final, family, "out-of-scope", references, diagnostics, count, form, strings, forms, levels, traits, chance, deterministic, null);
+                return Make(index, field, sanitized, parser, type, final, family, "out-of-scope", references, diagnostics, count, strings, forms, levels, traits, chance, deterministic, null);
 
             var status = "accepted";
             var refStatus = references[0].Status;
@@ -386,13 +383,13 @@ internal static class SpidInputs
             if (status == "accepted" && filtersFailed) status = "filters-unresolved";
             else if (status == "accepted" && unverifiedFilters) status = "unverified-filter";
 
-            return Make(index, field, sanitized, parser, type, final, family, status, references, diagnostics, count, form, strings, forms, levels, traits, chance, deterministic, null);
+            return Make(index, field, sanitized, parser, type, final, family, status, references, diagnostics, count, strings, forms, levels, traits, chance, deterministic, null);
         }
         catch (SpidError error)
         {
             return Dropped(index, field, sanitized, parser, type, error.Status, error.Message);
         }
-        catch (Exception ex) when (ex is FormatException or OverflowException or ArgumentOutOfRangeException or IndexOutOfRangeException)
+        catch (Exception ex) when (ex is FormatException or OverflowException or NativeConversionException or ArgumentOutOfRangeException or IndexOutOfRangeException)
         {
             return Dropped(index, field, sanitized, parser, type, "malformed", ex.Message);
         }
@@ -446,9 +443,9 @@ internal static class SpidInputs
                 if (type == "Form") family = prefix + GenericFamily(distributable.Status, record);
             }
             if (type == "Form" && found is null && references[0].Status != "created-keyword")
-                return Make(index, field, sanitized, parser, type, final, family, Unresolved(references[0].Status), references, diagnostics, count, form, null, parents, null, null, chance, deterministic, scope);
+                return Make(index, field, sanitized, parser, type, final, family, Unresolved(references[0].Status), references, diagnostics, count, null, parents, null, null, chance, deterministic, scope);
             if (!InScope(family))
-                return Make(index, field, sanitized, parser, type, final, family, "out-of-scope", references, diagnostics, count, form, null, parents, null, null, chance, deterministic, scope);
+                return Make(index, field, sanitized, parser, type, final, family, "out-of-scope", references, diagnostics, count, null, parents, null, null, chance, deterministic, scope);
 
             var status = references[0].Status is "resolved" or "created-keyword" ? "accepted"
                 : references[0].Status is "wrong-type" or "unsupported-type" ? "wrong-type" : Unresolved(references[0].Status);
@@ -460,13 +457,13 @@ internal static class SpidInputs
                 status = "unverified-filter";
             foreach (var unverified in FilterOutcomes(parentRefs, [], [], ReferenceOutcome.Unverified))
                 diagnostics.Add($"Parent {unverified.Identifier} ({unverified.Status}) is unverified; it stays in the parent filter.");
-            return Make(index, field, sanitized, parser, type, final, family, status, references, diagnostics, count, form, null, parents, null, null, chance, deterministic, scope);
+            return Make(index, field, sanitized, parser, type, final, family, status, references, diagnostics, count, null, parents, null, null, chance, deterministic, scope);
         }
         catch (SpidError error)
         {
             return Dropped(index, field, sanitized, parser, type, error.Status, error.Message, scope);
         }
-        catch (Exception ex) when (ex is FormatException or OverflowException or ArgumentOutOfRangeException or IndexOutOfRangeException)
+        catch (Exception ex) when (ex is FormatException or OverflowException or NativeConversionException or ArgumentOutOfRangeException or IndexOutOfRangeException)
         {
             return Dropped(index, field, sanitized, parser, type, "malformed", ex.Message, scope);
         }
@@ -486,13 +483,13 @@ internal static class SpidInputs
             var references = new List<SpidReference>();
             references.AddRange(forms.Match.Select(t => FilterReference("Match", t, lookup, all: false, whitelist: false)).Select(x => x.Ref));
             references.AddRange(forms.Not.Select(t => FilterReference("Not", t, lookup, all: false, whitelist: false)).Select(x => x.Ref));
-            return Make(index, field, sanitized, parser, "", false, family, "pending", references, [], (1, 1, null), null, null, forms, null, null, 100, false, null, name);
+            return Make(index, field, sanitized, parser, "", false, family, "pending", references, [], (1, 1, null), null, forms, null, null, 100, false, null, name);
         }
         catch (SpidError error)
         {
             return Dropped(index, field, sanitized, parser, "", error.Status, error.Message);
         }
-        catch (Exception ex) when (ex is FormatException or OverflowException or ArgumentOutOfRangeException or IndexOutOfRangeException)
+        catch (Exception ex) when (ex is FormatException or OverflowException or NativeConversionException or ArgumentOutOfRangeException or IndexOutOfRangeException)
         {
             return Dropped(index, field, sanitized, parser, "", "malformed", ex.Message);
         }
@@ -599,7 +596,7 @@ internal static class SpidInputs
         };
 
     private static SpidRule Make(int index, LlosField field, string sanitized, string parser, string type, bool final, string family, string status,
-        List<SpidReference> references, List<string> diagnostics, (int Min, int Max, int? Package) count, RawId? form,
+        List<SpidReference> references, List<string> diagnostics, (int Min, int Max, int? Package) count,
         SpidStringFilters? strings, SpidFormFilters? forms, SpidLevels? levels, SpidTraits? traits, double chance, bool deterministic,
         string? scope, string? group = null)
         => new(index, field.Line, field.Key, field.Value, sanitized, parser, type, final, family, status, references, diagnostics)
@@ -685,10 +682,10 @@ internal static class SpidInputs
         if (entry.Contains('~'))
         {
             var parts = entry.Split("~", StringSplitOptions.None);
-            return new("formid-mod", StoUL(parts[0], 16), parts[1], entry);
+            return new("formid-mod", NativeNumbers.Stoul(parts[0], 16), parts[1], entry);
         }
         if (entry.Contains(".es", StringComparison.Ordinal)) return new("plugin", 0, entry, entry);
-        if (IsOnlyHex(entry)) return new("formid", StoUL(entry, 16), "", entry);
+        if (IsOnlyHex(entry)) return new("formid", NativeNumbers.Stoul(entry, 16), "", entry);
         return new("editorid", 0, "", entry);
     }
 
@@ -780,23 +777,23 @@ internal static class SpidInputs
                 // Native string::split yields no parts for an empty token, so the skill is skipped, not malformed.
                 if (sanitized.Length == 0) continue;
                 var parts = sanitized.Split(' ', StringSplitOptions.None);
-                var type = StoUL(parts[0], 10);
+                var type = NativeNumbers.Stoul(parts[0], 10);
                 if (type >= 18) continue;
                 if (parts.Length < 2) throw new SpidError("malformed", "Skill level has no value");
-                var min = (byte)StoUL(parts[1], 10);
-                var max = parts.Length > 2 ? (byte)StoUL(parts[2], 10) : byte.MaxValue;
+                var min = (byte)NativeNumbers.Stoul(parts[1], 10);
+                var max = parts.Length > 2 ? (byte)NativeNumbers.Stoul(parts[2], 10) : byte.MaxValue;
                 (weight ? weights : skills).Add(new((int)type, min, max));
                 continue;
             }
             var pair = token.Split('/', StringSplitOptions.None);
             if (pair.Length > 1)
             {
-                actorMin = (ushort)StoUL(pair[0], 10);
-                actorMax = (ushort)StoUL(pair[1], 10);
+                actorMin = (ushort)NativeNumbers.Stoul(pair[0], 10);
+                actorMax = (ushort)NativeNumbers.Stoul(pair[1], 10);
             }
             else
             {
-                actorMin = (ushort)StoUL(token, 10);
+                actorMin = (ushort)NativeNumbers.Stoul(token, 10);
                 actorMax = ushort.MaxValue;
             }
         }
@@ -917,13 +914,10 @@ internal static class SpidInputs
         {
             case "formid-mod":
                 {
-                    if (!lookup.Resolver.TryGetPlugin(raw.Plugin, out var plugin))
-                        return (lookup.MergeMapper ? "merge-mapping-unavailable" : "missing-plugin", null);
                     // MergeMapper remaps every numeric reference before lookup (FormData.h); XEP cannot read its maps.
-                    if (lookup.MergeMapper) return ("merge-mapping-unverified", null);
-                    if (raw.FormId > (plugin.IsSmallMaster ? 0xFFFu : 0xFFFFFFu)) return ("outside-local-range", null);
-                    var record = lookup.Resolver.Winner(new FormKey(plugin.ModKey, raw.FormId));
-                    return record is null ? ("missing-record", null) : Typed(record, declared);
+                    var (failure, record) = FormLocator.Locate(lookup.Resolver, raw.Plugin, raw.FormId, FormIdRange.Refuse,
+                        MergeMapperHandling.AllReferences, lookup.MergeMapper);
+                    return failure is not null ? (failure, null) : Typed(record!, declared);
                 }
             case "formid":
                 {
@@ -976,49 +970,22 @@ internal static class SpidInputs
     }
 
     // Shared lookup state for one capture: plugins, winners, EditorID support and MergeMapper presence.
-    private sealed class Lookup(NativeFormResolver resolver, IReadOnlyList<ISkyrimModGetter> mods, string editorIds, bool mergeMapper)
+    private sealed class Lookup(NativeFormResolver resolver, string editorIds, bool mergeMapper)
     {
         public NativeFormResolver Resolver { get; } = resolver;
         public string EditorIds { get; } = editorIds;
         public bool MergeMapper { get; } = mergeMapper;
-        public List<ISkyrimModGetter> Regular { get; } = mods.Where(m => !m.IsSmallMaster).ToList();
-        public List<ISkyrimModGetter> Light { get; } = mods.Where(m => m.IsSmallMaster).ToList();
+        public List<ISkyrimModGetter> Regular { get; } = resolver.Mods.Where(m => !m.IsSmallMaster).ToList();
+        public List<ISkyrimModGetter> Light { get; } = resolver.Mods.Where(m => m.IsSmallMaster).ToList();
     }
 
     // ---- Numeric parsing (std::stoul / std::stoi / std::stod) -------------
-
-    // std::stoul on a 32-bit unsigned long: leading space, optional sign (negation
-    // modulo 2^32), optional 0x prefix for base 16; no digits throws; overflow throws.
-    internal static uint StoUL(string text, int radix)
-    {
-        var i = 0;
-        while (i < text.Length && IsSpace(text[i])) i++;
-        var negative = false;
-        if (i < text.Length && text[i] is '+' or '-') { negative = text[i] == '-'; i++; }
-        if (radix == 16 && i + 2 < text.Length && text[i] == '0' && text[i + 1] is 'x' or 'X' && Uri.IsHexDigit(text[i + 2])) i += 2;
-        var start = i;
-        ulong value = 0;
-        var overflow = false;
-        for (; i < text.Length; i++)
-        {
-            var digit = Digit(text[i], radix);
-            if (digit < 0) break;
-            if (!overflow)
-            {
-                value = value * (ulong)radix + (ulong)digit;
-                if (value > uint.MaxValue) overflow = true;
-            }
-        }
-        if (i == start) throw new FormatException("std::stoul: no conversion");
-        if (overflow) throw new OverflowException("std::stoul: out of range");
-        return negative ? unchecked(0u - (uint)value) : (uint)value;
-    }
 
     // std::stoi on a 32-bit int.
     internal static int StoI(string text)
     {
         var i = 0;
-        while (i < text.Length && IsSpace(text[i])) i++;
+        while (i < text.Length && NativeNumbers.IsSpace(text[i])) i++;
         var negative = false;
         if (i < text.Length && text[i] is '+' or '-') { negative = text[i] == '-'; i++; }
         var start = i;
@@ -1049,13 +1016,6 @@ internal static class SpidInputs
         return sign * value;
     }
 
-    private static int Digit(char c, int radix)
-    {
-        int value = c is >= '0' and <= '9' ? c - '0' : c is >= 'a' and <= 'f' ? c - 'a' + 10 : c is >= 'A' and <= 'F' ? c - 'A' + 10 : -1;
-        return value < radix ? value : -1;
-    }
-
-    private static bool IsSpace(char c) => c is ' ' or '\t' or '\n' or '\v' or '\f' or '\r';
 
     private static string RemoveNonAlphanumeric(string text)
     {

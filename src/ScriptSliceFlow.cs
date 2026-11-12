@@ -18,7 +18,7 @@ namespace XEnchantmentPatcher;
 public static partial class PatcherEngine
 {
     // Kind: list, carrier, quest or alias; unknown is a handle of unknown origin.
-    private sealed record SliceValue(string Kind, string KeyText, string View = "", bool Array = false)
+    internal sealed record SliceValue(string Kind, string KeyText, string View = "", bool Array = false)
     {
         private sealed record ParsedKeys(ImmutableArray<FormKey> Values);
         private static readonly ConditionalWeakTable<string, ParsedKeys> parsed = new();
@@ -31,10 +31,10 @@ public static partial class PatcherEngine
     }
     // Mutation marks a change to a list's entries or rules through a handle the analysis
     // cannot resolve, the only kind of unproved operation combined from another mod.
-    private sealed record SliceOp(string Body, string Label, string Function, string Line, string Problem, FormKey[]? Reach, bool Mutation = false);
-    private sealed record SliceEffect(string Body, string Function, string Method, FormKey[] Lists, int Position, string Line);
-    private readonly record struct SliceToken(string Value, int Index);
-    private sealed record SliceLine(string Raw, string Masked, int Position, SliceToken[] Tokens);
+    internal sealed record SliceOp(string Body, string Label, string Function, string Line, string Problem, FormKey[]? Reach, bool Mutation = false);
+    internal sealed record SliceEffect(string Body, string Function, string Method, FormKey[] Lists, int Position, string Line);
+    internal readonly record struct SliceToken(string Value, int Index);
+    internal sealed record SliceLine(string Raw, string Masked, int Position, SliceToken[] Tokens);
 
     private static SliceLine[] SliceLines(ScriptFunction function)
     {
@@ -51,7 +51,7 @@ public static partial class PatcherEngine
         }
         return lines.ToArray();
     }
-    private sealed class SliceBody
+    internal sealed class SliceBody
     {
         public required string Identity { get; init; }
         public required string Label { get; init; }
@@ -74,7 +74,7 @@ public static partial class PatcherEngine
 
         public void ReuseSyntax(SliceBody owner) => syntax = owner.Syntax;
     }
-    private sealed class SliceBodySyntax(SliceBody body)
+    internal sealed class SliceBodySyntax(SliceBody body)
     {
         public string Masked => TextSyntax(body.Text).Masked;
         // Syntax belongs to this complete body/chain, never to a name shared by
@@ -94,10 +94,9 @@ public static partial class PatcherEngine
             if (!declared.TryGetValue(key, out var known))
             {
                 using var timing = PhaseTiming.Measure("slice-flow.body.declaration-syntax");
-                declared[key] = known =
-                    Regex.Match(function.Body, @"(?im)^[ \t]*(?!(?:return|if|elseif|while)\b)(\w+)(\[\])?[ \t]+" + Regex.Escape(name) + @"[ \t]*(?:=|\r?$)") is { Success: true } variable ? variable.Groups[1].Value + variable.Groups[2].Value
-                    : Regex.Match(function.Parameters, @"(?i)(?:^|,)\s*(\w+)(\[\])?\s+" + Regex.Escape(name) + @"\b") is { Success: true } parameter ? parameter.Groups[1].Value + parameter.Groups[2].Value
-                    : Regex.Match(Masked, @"(?im)^[ \t]*(\w+)(\[\])?[ \t]+(?:property[ \t]+)?" + Regex.Escape(name) + @"\b") is { Success: true } member ? member.Groups[1].Value + member.Groups[2].Value : null;
+                declared[key] = known = FunctionDeclaredType(function, name)
+                    ?? (Regex.Match(Masked, @"(?im)^[ \t]*" + NotStatementKeyword + @"(\w+)(\[\])?[ \t]+(?:property[ \t]+)?" + Regex.Escape(name) + @"\b", RegexOptions.CultureInvariant)
+                        is { Success: true } member ? member.Groups[1].Value + member.Groups[2].Value : null);
             }
             return known;
         }
@@ -113,6 +112,16 @@ public static partial class PatcherEngine
         }
     }
 
+    // `If akList` (ElseIf, While, Return) is a statement about the name, never its declaration.
+    // Every declaration pattern starts with this guard, matched without culture-specific casing.
+    private const string NotStatementKeyword = @"(?!(?:return|if|elseif|while)\b)";
+
+    // Declared type of a local or parameter of one function, array brackets kept; shared by the
+    // slice flow and the availability scan.
+    private static string? FunctionDeclaredType(ScriptFunction function, string name) =>
+        Regex.Match(function.Body, @"(?im)^[ \t]*" + NotStatementKeyword + @"(\w+)(\[\])?[ \t]+" + Regex.Escape(name) + @"[ \t]*(?:=|\r?$)", RegexOptions.CultureInvariant) is { Success: true } variable ? variable.Groups[1].Value + variable.Groups[2].Value
+        : Regex.Match(function.Parameters, @"(?i)(?:^|,)\s*(\w+)(\[\])?\s+" + Regex.Escape(name) + @"\b", RegexOptions.CultureInvariant) is { Success: true } parameter ? parameter.Groups[1].Value + parameter.Groups[2].Value : null;
+
     private static SliceBody ReuseSliceBodySyntax(SliceBody body, Catalog catalog)
     {
         lock (catalog.SliceLock)
@@ -126,7 +135,7 @@ public static partial class PatcherEngine
             return body;
         }
     }
-    private sealed class SliceFlowState(ModKey mod)
+    internal sealed class SliceFlowState(ModKey mod)
     {
         public ModKey Mod { get; } = mod;
         public Dictionary<string, SliceBody> Bodies { get; } = new(StringComparer.Ordinal);
@@ -334,9 +343,8 @@ public static partial class PatcherEngine
     private static Dictionary<FormKey, bool> SliceActorReferences(Catalog catalog)
     {
         lock (catalog.SliceLock)
-            return catalog.RuntimeActorReferences ??= catalog.Mods
-                .SelectMany(m => m.EnumerateMajorRecords<IPlacedNpcGetter>()).GroupBy(r => r.FormKey).Where(g => !g.Last().IsDeleted && !g.Last().Base.IsNull)
-                .ToDictionary(g => g.Key, g => true);
+            return catalog.RuntimeActorReferences ??= RuntimeRecordWinners(catalog).Values.Select(w => w.Record).OfType<IPlacedNpcGetter>()
+                .Where(r => !r.IsDeleted && !r.Base.IsNull).ToDictionary(r => r.FormKey, r => true);
     }
 
     // Every listed mod's flow, as EnsureSliceFlow computes it. A mod's analysis never

@@ -56,14 +56,14 @@ public static partial class PatcherEngine
         return new string(output);
     }
 
-    private static (string? Text, string Evidence) PrepareRuntimeScript((string? Text, string Evidence) script)
+    internal static (string? Text, string Evidence) PrepareRuntimeScript((string? Text, string Evidence) script)
     {
         if (script.Text is null) return script;
         var prepared = MaskPapyrusText(script.Text, false);
         return (prepared, prepared is null ? script.Evidence + "; malformed script literal/comment" : script.Evidence);
     }
 
-    private static string MaskScriptStrings(string text) => MaskPapyrusText(text, true) ?? "__xep_unparsed_script_text";
+    internal static string MaskScriptStrings(string text) => MaskPapyrusText(text, true) ?? "__xep_unparsed_script_text";
 
     // Masking, encoding and lexical facts of one immutable script/function body.
     // Keyed by the string instance, so different text cannot collide; entries die
@@ -91,7 +91,7 @@ public static partial class PatcherEngine
         private static readonly string RegexCulture = System.Globalization.CultureInfo.CurrentCulture.Name;
         private static readonly Regex AutoPropertyDeclarations = new(@"(?im)^\s*(\w+(?:\[\])?)\s+property\s+(\w+)\s+auto(?:readonly)?(?:\s+hidden)?\s*$", RegexOptions.Compiled);
         private static readonly Regex Rebindings = new(@"\b(\w+)\s*(?:[+\-*/]?=|\[)", RegexOptions.Compiled);
-        private static readonly Regex LocalDeclarations = new(@"(?im)^\s*(?!(?:return|if|elseif|while)\b)\w+(?:\[\])?\s+(\w+)\s*(?:=|$)", RegexOptions.Compiled);
+        private static readonly Regex LocalDeclarations = new(@"(?im)^[ \t]*" + NotStatementKeyword + @"\w+(?:\[\])?[ \t]+(\w+)[ \t]*(?:=|\r?$)", RegexOptions.Compiled);
         private static readonly Regex MethodDeclarations = new(@"(?im)^\s*(?:\w+(?:\[\])?\s+)?(?:function|event)\s+(\w+)\s*\(", RegexOptions.Compiled);
         private static readonly Regex WordTokens = new(@"\w+", RegexOptions.Compiled);
         private Dictionary<string, (string Type, int Count)>? autoProperties;
@@ -155,7 +155,7 @@ public static partial class PatcherEngine
                 if (AsciiIdentifier(name) && (maskedAscii ??= ScriptLiteralSearch.IsAscii(Masked)))
                     return localDeclarations[key] = (localDeclarers ??= Captured(LocalDeclarations, Masked)).Contains(name);
                 return localDeclarations[key] = ScriptLiteralSearch.MayContain(Masked, name, ref maskedAscii) && Regex.IsMatch(Masked,
-                    @"(?im)^\s*(?!(?:return|if|elseif|while)\b)\w+(?:\[\])?\s+" + Regex.Escape(name) + @"\s*(?:=|$)");
+                    @"(?im)^[ \t]*" + NotStatementKeyword + @"\w+(?:\[\])?[ \t]+" + Regex.Escape(name) + @"[ \t]*(?:=|\r?$)");
             }
         }
         public bool HasParameter(string name)

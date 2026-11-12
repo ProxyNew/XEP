@@ -8,7 +8,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private static List<FormKey[]> ExpansionContexts(FormKey point, int proof, string? destinationProblem,
+    internal static List<FormKey[]> ExpansionContexts(FormKey point, int proof, string? destinationProblem,
         Dictionary<(FormKey Point, int Proof), List<FormKey[]>> cache, Func<List<FormKey[]>> resolve)
     {
         // A destination refusal is local; it cannot populate or bypass the shared context cache.
@@ -16,7 +16,7 @@ public static partial class PatcherEngine
         if (!cache.TryGetValue((point, proof), out var paths)) cache[(point, proof)] = paths = resolve();
         return paths;
     }
-    private sealed record SpecializedRoute(EnchantedTemplate Template, ParentEntry Destination, FormKey PeerPool,
+    internal sealed record SpecializedRoute(EnchantedTemplate Template, ParentEntry Destination, FormKey PeerPool,
         FormKey ReplicatedSelector = default, IReadOnlyList<FormKey>? IsolationPath = null, IReadOnlyList<FormKey>? MaterialPath = null,
         MaterialSourceProof? SourceProof = null, MerchantInventoryEdge? MerchantIsolation = null, MerchantSourceRoute? CountedMerchantSource = null, LootRecipientEdge? RecipientIsolation = null)
     {
@@ -24,11 +24,11 @@ public static partial class PatcherEngine
         // whose slot choice receives the counterpart instead of the bundle itself (UseAllBundleSlots).
         public FormKey Slot { get; init; }
     }
-    private sealed record SpecializedRefusal(string Attempt, string Problem)
+    internal sealed record SpecializedRefusal(string Attempt, string Problem)
     {
         public string Description => $"Refused {Attempt}: {Problem.TrimEnd('.')}.";
     }
-    private sealed record SpecializedAssessment(List<SpecializedRoute> Routes, List<string> Evidence)
+    internal sealed record SpecializedAssessment(List<SpecializedRoute> Routes, List<string> Evidence)
     {
         public string Stage { get; set; } = "CounterpartSearch";
         public List<SpecializedRefusal> Refusals { get; init; } = [];
@@ -41,7 +41,7 @@ public static partial class PatcherEngine
             Refusals.Add(refusal); Evidence.Add(refusal.Description);
         }
     }
-    private sealed record TypedLootUse(FormKey Consumer, string Role, string Context, string Family, bool Known, bool ScopeOnly = false)
+    internal sealed record TypedLootUse(FormKey Consumer, string Role, string Context, string Family, bool Known, bool ScopeOnly = false)
     {
         public string EstablishedRole { get; init; } = "";
         // Uses key hot planning tables and their strings are long: hash once per
@@ -67,7 +67,7 @@ public static partial class PatcherEngine
     private sealed record ControlledSelector(FormKey Root, FormKey[] Lists, FormKey[] Leaves);
 
     // Frozen evidence graph: planning new pools must never become evidence for another item.
-    private sealed class SpecializedEvidence
+    internal sealed class SpecializedEvidence
     {
         public readonly Dictionary<FormKey, ILeveledItemGetter> Lists;
         public readonly Dictionary<FormKey, List<ParentEntry>> Parents;
@@ -232,7 +232,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private static SpecializedEvidence SpecializedGraph(Catalog catalog)
+    internal static SpecializedEvidence SpecializedGraph(Catalog catalog)
     {
         if (!catalog.AvailabilityInitialized)
             throw new InvalidOperationException("Initialize source availability before building specialized evidence.");
@@ -266,8 +266,6 @@ public static partial class PatcherEngine
         while (templateQueue.TryDequeue(out var target))
             if (templateTargets.Add(target) && leveled.TryGetValue(target, out var templateList))
                 foreach (var entry in templateList.Entries ?? []) if (entry.Data is { } data) templateQueue.Enqueue(data.Reference.FormKey);
-        var questActors = catalog.Mods.SelectMany(m => m.Quests).GroupBy(q => q.FormKey).Select(g => g.Last())
-            .Where(q => !q.IsDeleted).SelectMany(q => q.EnumerateFormLinks()).Select(l => l.FormKey).Where(npcs.ContainsKey).ToHashSet();
         void Add(IMajorRecordGetter consumer, string role, string context, string family, bool known, IEnumerable<FormKey> refs, bool scopeOnly = false)
         {
             foreach (var key in refs.Where(k => !k.IsNull).Distinct())
@@ -278,6 +276,14 @@ public static partial class PatcherEngine
         }
         // Shared choice maps retain correlation between inventory, race and faction.
         var npcResolver = new NpcBranchResolver(npcs, leveled);
+        // An actor a quest links to is scoped like a unique one. The bytes of a quest Mutagen
+        // cannot read may name an actor it does not link, and a wrong member would lift that
+        // actor's veto: the scan stops at such a quest unless the actor is unique anyway.
+        var questActors = new HashSet<FormKey>();
+        foreach (var (quest, keys, unreadable) in QuestLinks(catalog.Mods).Where(q => !q.Quest.IsDeleted))
+            foreach (var key in keys.Where(npcs.ContainsKey))
+                if (unreadable is null || npcResolver.IsUnique(npcs[key])) questActors.Add(key);
+                else throw new InvalidOperationException($"The quest {quest.FormKey} cannot be read and may reference the actor {key}.", unreadable);
         SpidRecipients spid;
         using (PhaseTiming.Measure("spid.recipient-rules")) spid = new SpidRecipients(catalog.Spid, catalog, npcs, leveled, outfits.ToDictionary(x => x.Key, x => (IOutfitGetter)x.Value));
         catalog.SpidProtectedOutfits = spid.ProtectedOutfits;
@@ -403,23 +409,13 @@ public static partial class PatcherEngine
         return graph;
     }
 
-    private static string SpecializedGroup(EquipmentClass c) => c.Signature == "ARMO"
+    internal static string SpecializedGroup(EquipmentClass c) => c.Signature == "ARMO"
         ? $"ARMO|{c.ArmorType}|{c.Type}" : c.Type switch
         {
             "Sword" or "WarAxe" or "Mace" => "WEAP|1H",
             "Greatsword" or "Battleaxe" or "Warhammer" => "WEAP|2H",
             _ => $"WEAP|{c.Type}"
         };
-
-    private static bool IsOfficialDistributionRecord(FormKey key)
-    {
-        var name = key.ModKey.FileName.String;
-        return name.Equals("Skyrim.esm", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("Update.esm", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("Dawnguard.esm", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("HearthFires.esm", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("Dragonborn.esm", StringComparison.OrdinalIgnoreCase);
-    }
 
     // The template list is replaced, not edited, when the selection changes; its item
     // set is built once per list (the count guards an in-place edit).
@@ -433,11 +429,11 @@ public static partial class PatcherEngine
         return items;
     }
 
-    private sealed record PeerWindow(short Low, int High);
+    internal sealed record PeerWindow(short Low, int High);
     // Ordinary peer paths are transparent unless a captured source proof supplies
     // each encountered control with its exact imposing-list provenance. The proof
     // still has to authorize the destination consumer and is attached at placement.
-    private static List<PeerWindow> PeerWindows(FormKey root, FormKey item, SpecializedEvidence graph,
+    internal static List<PeerWindow> PeerWindows(FormKey root, FormKey item, SpecializedEvidence graph,
         short low = 1, int high = short.MaxValue, bool allowOuterBundles = false,
         MaterialAvailabilityPath? availability = null)
     {
@@ -559,7 +555,7 @@ public static partial class PatcherEngine
         var gates = uses.Select(Required).ToArray();
         var common = new HashSet<FormKey>(gates[0]);
         foreach (var set in gates.Skip(1)) common.IntersectWith(set);
-        var contexts = uses.Select((use, i) => (Use: use, Gates: gates[i].Except(common).Order().ToArray()))
+        var contexts = uses.Select((use, i) => (Use: use, Gates: gates[i].Except(common).Order(FormKeyOrder.Instance).ToArray()))
             .GroupBy(x => string.Join(">", x.Gates), StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal).ToArray();
         if (contexts.Length < 2) return [receiverProof];
         var graph = SpecializedGraph(catalog);
@@ -572,7 +568,7 @@ public static partial class PatcherEngine
 
     private static SpecializedAssessment AssessSpecialized(FormKey key, Catalog catalog) => AssessSpecializedRoutes(key, catalog, false);
 
-    private static SpecializedAssessment AssessSpecializedRoutes(FormKey key, Catalog catalog, bool expandMaterials, FormKey? observedReceiver = null)
+    internal static SpecializedAssessment AssessSpecializedRoutes(FormKey key, Catalog catalog, bool expandMaterials, FormKey? observedReceiver = null)
     {
         using var timing = PhaseTiming.Measure(expandMaterials ? "review.material-expansion" : "review.specialized-routes");
         var graph = SpecializedGraph(catalog);
@@ -641,9 +637,6 @@ public static partial class PatcherEngine
         var sourceAtom = observedReceiver ?? selector?.Root ?? key;
         var sourceUses = observedReceiver is { } receiver ? graph.Endpoints(receiver).Where(u => u.Known).Distinct().ToArray()
             : selector is null ? graph.UncontrolledEndpoints(key, result) : graph.Endpoints(selector.Root);
-        bool MatchesSource(TypedLootUse destination) => observedReceiver is not null
-            ? destination.Known && sourceUses.Any(s => s.Consumer == destination.Consumer && s.Role == destination.Role || ExactActorDeathUse(destination, s))
-            : MatchesSpecializedUse(destination, sourceUses, selector is not null);
         if (observedReceiver is not null && sourceUses.Length == 0)
             return Stop("OriginalReceiverConsumers", "Runtime mirror withheld: no resolved original receiver consumer; virtual insertions cannot authorize orphan or unresolved contexts.");
         var receiverProof = observedReceiver is not null ? new MaterialSourceProof(new MaterialAvailabilityPath(), null, 1, sourceUses) : null;
@@ -653,6 +646,11 @@ public static partial class PatcherEngine
         var proofUses = observedReceiver is not null ? sourceUses : graph.Endpoints(key).Concat(catalog.ScriptUnlocks.GetValueOrDefault(key, [])
             .SelectMany(u => graph.Endpoints(u.OriginalTarget))).Where(u => u.Known).Distinct().ToArray();
         var exactSourceConsumers = proofUses.Select(u => (u.Consumer, u.Role)).ToHashSet();
+        var livingSourceConsumers = observedReceiver is null ? null : sourceUses.Where(u => u.Known && IsLivingNpcRole(u.Role)).Select(u => u.Consumer).ToHashSet();
+        bool MatchesSource(TypedLootUse destination) => observedReceiver is not null
+            ? destination.Known && (exactSourceConsumers.Contains((destination.Consumer, destination.Role))
+                || destination.Role is "NPC death loot" or SpidDeathRole && livingSourceConsumers!.Contains(destination.Consumer))
+            : MatchesSpecializedUse(destination, sourceUses, selector is not null);
         var sourceMatcher = new MaterialSourceMatcher(proofUses, sourceProofs);
         // This cache belongs to one assessment: proof Uses, exact consumers and
         // the complete proof set are fixed here. Never key a cross-source cache
@@ -956,14 +954,13 @@ public static partial class PatcherEngine
             }
             enabled = enabled.Where(x => peers.ContainsKey(x.Template.BaseItem.FormKey)).ToArray();
             if (requiresAvailabilityAttachment || enabled.Length == 0) continue;
-            // An official ordinary selector establishes that the source may use the
-            // peer's enchantment family. It does not authorize every consumer of a
-            // shared enchanted terminal. Placement still has to remain inside a
-            // matching source context below.
-            var officialPeerSelector = observedReceiver is null && enabled.All(x =>
+            // An ordinary selector that lists the source beside the peer establishes that
+            // the source may use the peer's enchantment family. It does not authorize every
+            // consumer of a shared enchanted terminal. Placement still has to remain inside
+            // a matching source context below. The flag adds an evidence line only.
+            var sharedPeerSelector = observedReceiver is null && enabled.All(x =>
             {
-                var peer = peers[x.Template.BaseItem.FormKey];
-                if (!IsOfficialDistributionRecord(peer) || !graph.Lists.TryGetValue(peer, out var ordinary)) return false;
+                if (!graph.Lists.TryGetValue(peers[x.Template.BaseItem.FormKey], out var ordinary)) return false;
                 var direct = (ordinary.Entries ?? []).Where(e => e.Data is not null).Select(e => e.Data!.Reference.FormKey).ToHashSet();
                 return direct.Contains(sourceAtom) && direct.Contains(x.Template.BaseItem.FormKey);
             });
@@ -1004,14 +1001,19 @@ public static partial class PatcherEngine
                 foreach (var x in enabled)
                 {
                     var level = Math.Max(x.Parent.Level, merchant.Proof.Level);
-                    if (HasHighestEligibleCutoff(dest) && level > x.Parent.Level) continue;
+                    if (HasHighestEligibleCutoff(dest) && level > x.Parent.Level)
+                    {
+                        result.Refuse($"merchant path {graph.PathLabel(merchant.Path)} for container [{merchant.Edge.Container}]",
+                            $"source minimum {level} would change highest-eligible tier {x.Parent.Level}");
+                        continue;
+                    }
                     result.Routes.Add(new(x.Template, x.Parent with { Level = level }, peers[x.Template.BaseItem.FormKey],
                         selector?.Root ?? default, merchant.Path, SourceProof: merchant.Proof, MerchantIsolation: merchant.Edge) { Slot = Slot(x.Template) });
                     accepted++;
                 }
             }
-            if (officialPeerSelector)
-                result.Evidence.Add("Canonical ordinary peer evidence licenses the enchantment family; each written counterpart still requires its consumer and availability proof.");
+            if (sharedPeerSelector)
+                result.Evidence.Add("An ordinary selector lists the source (or its selector) directly beside the peer; each written counterpart still requires its consumer and availability proof.");
             if (accepted == 0)
                 result.Refuse("enchanted destination " + label, "no proved incoming LVLI boundary or writable private recipient reference; shared consumers remain protected");
             else
@@ -1060,7 +1062,7 @@ public static partial class PatcherEngine
         return true;
     }
 
-    private static void BuildSpecializedEnchantedPlans(CandidateItem candidate, Catalog catalog, ProfileSettings profile, PlanningAdditions<VariantPlan> plans)
+    internal static void BuildSpecializedEnchantedPlans(CandidateItem candidate, Catalog catalog, ProfileSettings profile, PlanningAdditions<VariantPlan> plans)
     {
         using var timing = PhaseTiming.Measure("plans.specialized");
         var key = FormKey.Factory(candidate.FormKey);
@@ -1183,8 +1185,7 @@ public static partial class PatcherEngine
         foreach (var group in assessment.Routes.Where(r => r.MaterialPath is null && r.CountedMerchantSource is null
                      && (r.SourceProof is null || r.MerchantIsolation is not null || !r.ReplicatedSelector.IsNull)).GroupBy(r => VariantIdentity(r.Template.Item, r.Template.Enchantment, catalog)))
         {
-            int Rank(SpecializedRoute r) { var i = profile.EnchantmentProviderPlugins.FindIndex(p => p.Equals(r.Template.Enchantment.ModKey.FileName.String, StringComparison.OrdinalIgnoreCase)); return i < 0 ? int.MaxValue : i; }
-            var ordered = group.OrderBy(Rank).ThenBy(r => r.Template.Item.FormKey).ToArray();
+            var ordered = group.OrderBy(r => ProviderRank(profile, r.Template.Enchantment.ModKey)).ThenBy(r => r.Template.Item.FormKey).ToArray();
             var existing = inventory.Where(i => OrdinaryEquipment(i, catalog.KeywordNames) && TryEnchantment(i, out var e) && VariantIdentity(i, e, catalog) == group.Key).ToArray();
             var occupied = existing.SelectMany(i => CdfCoveredAncestors(i.FormKey, PlannedLootAncestors(i.FormKey, catalog), catalog)).Select(k => (k, "")).ToHashSet();
             var authoredOccupied = occupied.ToHashSet();
@@ -1263,10 +1264,11 @@ public static partial class PatcherEngine
         // Without plans, the assessment's "Supported ..." lines describe routes a later attachment check refused.
         catalog.DistributionNotes.Add($"{candidate.Name} [{key}]: {candidate.Reason}. " + (plans.Count == start && !replicatedCoverage ? "Route assessment before attachment checks: " : "")
             + string.Join(" ", assessment.Evidence));
-        BuildCountedMerchantPlans(candidate, catalog, profile, plans, assessment.Routes.Where(r => r.CountedMerchantSource is not null).ToArray());
+        if (assessment.Routes.Where(r => r.CountedMerchantSource is not null).ToArray() is { Length: > 0 } counted)
+            catalog.CountedMerchantRequests.Add(new(candidate, counted));
     }
 
-    private static void BuildSpecializedMaterialPlans(CandidateItem candidate, Catalog catalog, ProfileSettings profile, PlanningAdditions<VariantPlan> plans)
+    internal static void BuildSpecializedMaterialPlans(CandidateItem candidate, Catalog catalog, ProfileSettings profile, PlanningAdditions<VariantPlan> plans)
     {
         using var timing = PhaseTiming.Measure("plans.expansion");
         var key = FormKey.Factory(candidate.FormKey);

@@ -11,37 +11,36 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record RuntimePayloadExpressionDiagnostic(string OwnerIdentity, string Function,
-        string Expression, string Kind, string[] PossibleIdentities, bool MayBeNone, string? Problem, string Evidence);
+    internal static Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> RuntimeRecordWinners(Catalog catalog)
+        => catalog.RuntimeWinningRecords;
 
-    private static Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> RuntimeRecordWinners(Catalog catalog)
-    {
-        if (catalog.RuntimeWinningRecords is { } old) return old;
-        using var timing = PhaseTiming.Measure("availability.record-winners");
-        return catalog.RuntimeWinningRecords = LoadOrderWinners(catalog.Mods);
-    }
+    // The top-level groups of a plugin, in the order EnumerateMajorRecords visits them
+    // (Mutagen declares them in that order; winning-consumer-tests pin it).
+    private static readonly System.Reflection.PropertyInfo[] TopLevelGroups = typeof(ISkyrimModGetter).GetProperties()
+        .Where(p => typeof(IMajorRecordGetterEnumerable).IsAssignableFrom(p.PropertyType)).ToArray();
 
     // One load-order winner index, shared by SkyPatcher input resolution and
-    // availability analysis of the same loaded plugins.
-    internal static Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> LoadOrderWinners(IReadOnlyList<ISkyrimModGetter> loaded)
+    // availability analysis of the same loaded plugins. Given a list, it also collects the EditorID
+    // of every record read, in merge order: the input of the scan's EditorID index.
+    internal static Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> LoadOrderWinners(IReadOnlyList<ISkyrimModGetter> loaded,
+        List<(string EditorId, FormKey Key)>? editorIds = null)
     {
+        // A worker reads one top-level group of one plugin, so the largest plugins are read by
+        // several workers. Units are handed out one at a time; the merge follows plugin order,
+        // then group order, which is the order of EnumerateMajorRecords for each plugin.
+        var records = new (FormKey Key, ISkyrimMajorRecordGetter Record, string? EditorId)[loaded.Count * TopLevelGroups.Length][];
+        Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(Enumerable.Range(0, records.Length),
+            System.Collections.Concurrent.EnumerablePartitionerOptions.NoBuffering),
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Min(8, Math.Max(1, Environment.ProcessorCount)) },
+            unit => records[unit] = ((IMajorRecordGetterEnumerable)TopLevelGroups[unit % TopLevelGroups.Length].GetValue(loaded[unit / TopLevelGroups.Length])!)
+                .EnumerateMajorRecords().OfType<ISkyrimMajorRecordGetter>().Select(record => (record.FormKey, record, editorIds is null ? null : record.EditorID)).ToArray());
         var result = new Dictionary<FormKey, (ISkyrimMajorRecordGetter, ModKey)>();
-        var width = Math.Min(8, Math.Max(1, Environment.ProcessorCount));
-        var options = new ParallelOptions { MaxDegreeOfParallelism = width };
-        for (var start = 0; start < loaded.Count; start += width)
-        {
-            var mods = loaded.Skip(start).Take(width).ToArray();
-            var records = new (FormKey Key, ISkyrimMajorRecordGetter Record)[mods.Length][];
-            void Read(int i) => records[i] = mods[i].EnumerateMajorRecords().OfType<ISkyrimMajorRecordGetter>()
-                .Select(record => (record.FormKey, record)).ToArray();
-            // A worker owns one plugin's inventory. Bound temporary storage and
-            // join every reader before merging or propagating an exception.
-            if (mods.Length == 1 || mods.Distinct(ReferenceEqualityComparer.Instance).Count() != mods.Length)
-                for (var i = 0; i < mods.Length; i++) Read(i);
-            else Parallel.For(0, mods.Length, options, Read);
-            for (var i = 0; i < mods.Length; i++)
-                foreach (var record in records[i]) result[record.Key] = (record.Record, mods[i].ModKey);
-        }
+        for (var unit = 0; unit < records.Length; unit++)
+            foreach (var record in records[unit])
+            {
+                result[record.Key] = (record.Record, loaded[unit / TopLevelGroups.Length].ModKey);
+                if (!string.IsNullOrEmpty(record.EditorId)) editorIds!.Add((record.EditorId, record.Key));
+            }
         // A later deletion or VMAD removal must remain the winner.
         return result;
     }

@@ -9,7 +9,7 @@ public static partial class PatcherEngine
 {
     // ChangeId identifies the authored change; a replacement's own erasure is
     // excluded when proving that its predecessor is present for it to replace.
-    private sealed record CdfRemoval(FormKey Item, FormKey Consumer, FormKey Base, bool Reference, uint Count, string Provenance,
+    internal sealed record CdfRemoval(FormKey Item, FormKey Consumer, FormKey Base, bool Reference, uint Count, string Provenance,
         string ChangeId = "")
     {
         // Reaches every container (a rule without a positive selector); Consumer and
@@ -55,7 +55,7 @@ public static partial class PatcherEngine
     // CDF removes resulting inventory objects, not leveled-list definitions.
     // This immutable effect index is shared by source, counterpart and output
     // checks. Possible list/random outcomes cannot prove a residual quantity.
-    private sealed class CdfRemovals(IEnumerable<CdfRemoval> removals, IEnumerable<CdfListUse> uses,
+    internal sealed class CdfRemovals(IEnumerable<CdfRemoval> removals, IEnumerable<CdfListUse> uses,
         IEnumerable<CdfRemoval>? variantErasures = null, IReadOnlySet<FormKey>? respawning = null)
     {
         private readonly CdfRemoval[] all = removals.ToArray();

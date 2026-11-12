@@ -58,7 +58,7 @@ public static partial class PatcherEngine
         return item.FormKey;
     }
 
-    private static void EnsureSourceIndex(Catalog catalog)
+    internal static void EnsureSourceIndex(Catalog catalog)
     {
         if (catalog.SourceEquipment is not null) return;
         using var timing = PhaseTiming.Measure("source-index");
@@ -96,6 +96,8 @@ public static partial class PatcherEngine
     // HashSet.Overlaps walks its argument. Coverage sets grow with every placement,
     // so walk whichever set is smaller; the answer is symmetric.
     private static bool SetsOverlap<T>(HashSet<T> a, HashSet<T> b) => a.Count <= b.Count ? b.Overlaps(a) : a.Overlaps(b);
+    // A recipient context claims no ancestors. Like the cached ancestor sets, it is only read.
+    private static readonly HashSet<FormKey> NoAncestors = [];
 
     private const int ParallelContextProofs = 4;
 
@@ -119,7 +121,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private static string VariantIdentity(IMajorRecordGetter item, FormKey enchantment, Catalog catalog)
+    internal static string VariantIdentity(IMajorRecordGetter item, FormKey enchantment, Catalog catalog)
         => Facts(item, catalog).Identity(enchantment);
 
     private static bool ReusableEquipment(IMajorRecordGetter item) => !item.IsDeleted && item switch
@@ -136,7 +138,7 @@ public static partial class PatcherEngine
                 .Any(n => n.Contains("Artifact", StringComparison.OrdinalIgnoreCase) || n.Contains("DisallowEnchanting", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static EnchantedTemplate[] TemplatesForExactSource(IMajorRecordGetter source,
+    internal static EnchantedTemplate[] TemplatesForExactSource(IMajorRecordGetter source,
         IEnumerable<EnchantedTemplate> templates, Catalog catalog)
     {
         var subtype = DistributionSubtype(source, catalog);
@@ -212,7 +214,7 @@ public static partial class PatcherEngine
         return parts is { Length: >= 2 } ? $"{parts[0]}|{parts[1]}" : subtype ?? "";
     }
 
-    private static EnchantedTemplate[] TemplatesForBroadSource(IMajorRecordGetter source,
+    internal static EnchantedTemplate[] TemplatesForBroadSource(IMajorRecordGetter source,
         IEnumerable<EnchantedTemplate> templates, Catalog catalog)
     {
         return templates.GroupBy(x => x.Enchantment.ModKey)
@@ -252,7 +254,7 @@ public static partial class PatcherEngine
         var branchProfiles = new Dictionary<FormKey, EnchantedBranchProfile>();
         var profiling = new HashSet<FormKey>();
         var templateRoutes = new Dictionary<(ParentEntry Seed, string Class, string Subtype, bool AllowDirectItems), PoolRoute[]>();
-        var broadRouteCache = new Dictionary<(FormKey Item, string Group, string Type), BroadRoute[]>();
+        var broadRouteCache = new Dictionary<(FormKey Item, string Group, string Type, string Materials), BroadRoute[]>();
         var leafDepths = new Dictionary<FormKey, int?>();
         var acyclic = new Dictionary<FormKey, bool>();
         var active = new HashSet<FormKey>();
@@ -370,7 +372,9 @@ public static partial class PatcherEngine
             { Reject("RuntimeControlledDestination", p.List, runtimeControl); return false; }
             if (!Ancestors(p.List).All(Acyclic)) { Reject("InvalidOrCyclicAncestorTree", p.List); return false; }
             if (l.Entries is not { Count: > 0 }) { Reject("EmptyList", p.List); return false; }
-            if (l.Entries.Any(e => e.Data is null || e.ExtraData is not null))
+            // Rows are the entries with data, cached per plugin record: fewer plain rows
+            // than entries is an entry without data or with extra data.
+            if (LeveledEntryRows(l).Count(r => !r.HasExtraData) != l.Entries.Count)
             { Reject("MalformedOrExtraDataEntry", p.List); return false; }
             return true;
         }
@@ -506,11 +510,11 @@ public static partial class PatcherEngine
         {
             nested = null;
             var parentList = catalog.Lists[parent.List];
-            var levels = parentList.Entries!.Select(e => e.Data!.Level).Distinct().Order().ToArray();
             var effectiveLevel = Math.Max(child.Level, parent.Level);
             // Calculate-from-all-levels selectors do not let a new higher entry take
             // over the list. A one-tier highest selector also has no boundary to cross.
-            if (((int)parentList.Flags & 1) != 0 || levels.Length <= 1 || effectiveLevel == parent.Level)
+            if (((int)parentList.Flags & 1) != 0 || effectiveLevel == parent.Level
+                || LeveledEntryRows(parentList).Select(r => r.Level).Distinct().Count() <= 1)
                 return false;
 
             var branch = BranchProfile(child.List);
@@ -549,7 +553,7 @@ public static partial class PatcherEngine
             EquipmentClass cls, string? subtype)
         {
             var list = catalog.Lists[route.List];
-            var children = list.Entries!.Select(e => e.Data!.Reference.FormKey).ToArray();
+            var children = LeveledEntryRows(list).Select(r => r.Reference).ToArray();
             var listChildren = children.Count(catalog.Lists.ContainsKey);
             if (!UniqueContext(route.List))
             {
@@ -561,12 +565,12 @@ public static partial class PatcherEngine
                     yield return new(route, route.Level, FormKey.Null);
                     yield break;
                 }
-                if (listChildren == 0 && allowDirectItems && list.Entries!.All(e => e.Data!.Count == 1))
+                if (listChildren == 0 && allowDirectItems && LeveledEntryRows(list).All(r => r.Count == 1))
                 {
                     yield return new(route, route.Level, FormKey.Null, DirectItemPlacement: true);
                     yield break;
                 }
-                if (listChildren == 0 && list.Entries!.All(e => e.Data!.Count == 1))
+                if (listChildren == 0 && LeveledEntryRows(list).All(r => r.Count == 1))
                 {
                     // A controlled family cannot be inserted as a bare item because a
                     // global or quest gate belongs to the family. Attach one generated
@@ -593,7 +597,7 @@ public static partial class PatcherEngine
                 yield break;
             }
             if (!CanLift(route.List, false)) yield break;
-            if (list.Entries!.Any(e => e.Data!.Count != 1)) { Reject("TerminalEntryCount", route.List); yield break; }
+            if (LeveledEntryRows(list).Any(r => r.Count != 1)) { Reject("TerminalEntryCount", route.List); yield break; }
             // Inside a Give All bundle a mirrored sibling would be one more
             // co-awarded entry of the bundle. Attach the wrapper inside this choice instead,
             // so the bundle's slot still awards one equipment family (UseAll contract C1).
@@ -612,7 +616,7 @@ public static partial class PatcherEngine
                 if (!SafeContext(parent) || !UniqueContext(parent.List)
                     || !BranchAllowed(parent.List)) continue;
                 // Repeated branch entries express weights; do not collapse them.
-                if (catalog.Lists[parent.List].Entries!.Count(e => e.Data!.Reference.FormKey == route.List) != 1)
+                if (LeveledEntryRows(catalog.Lists[parent.List]).Count(r => r.Reference == route.List) != 1)
                 { Reject("RepeatedWeightedChild", parent.List, route.List.ToString()); continue; }
                 if (TryRouteInsideHighestTier(route, parent, cls, subtype, allowDirectItems, out var nested))
                 {
@@ -749,9 +753,14 @@ public static partial class PatcherEngine
             catalog.WinningPlugins.GetValueOrDefault(template.Item.FormKey, template.Item.FormKey.ModKey)
         }.Concat(template.Parents.Select(p => catalog.WinningPlugins.GetValueOrDefault(p.List, p.List.ModKey))).Min(Rank);
 
-        BroadRoute[] BroadRoutes(EnchantedTemplate template, EquipmentShape shape)
+        // The fixed-material selector test in BroadRoutes reads the source materials, so
+        // they belong to its cache key; a case-insensitive set gives the same key in any
+        // order. Each source builds this once and passes it to every call.
+        static string BroadMaterials(EquipmentShape shape)
+            => string.Join(",", shape.Materials.Select(m => m.ToUpperInvariant()).Distinct().Order(StringComparer.Ordinal));
+        BroadRoute[] BroadRoutes(EnchantedTemplate template, EquipmentShape shape, string materials)
         {
-            var cacheKey = (template.Item.FormKey, shape.Group, shape.Type);
+            var cacheKey = (template.Item.FormKey, shape.Group, shape.Type, materials);
             var evidenceKey = $"broad-route|{cacheKey}";
             if (broadRouteCache.TryGetValue(cacheKey, out var cached)) { trace.UnionWith(routeEvidence[evidenceKey]); return cached; }
             var previousTrace = BeginTrace("broad-route");
@@ -918,65 +927,70 @@ public static partial class PatcherEngine
             }
             if (candidate.RequiresLootReview)
             {
-                if (candidate.SpecializedMode == SpecializedLootMode.Disabled)
+                // Every mode is named. Only the two general-mixing modes continue to the general
+                // placement below; any other mode throws here rather than reach it unconfined.
+                switch (candidate.SpecializedMode)
                 {
-                    candidate.Reason = "Specialized loot review: distribution disabled";
-                    catalog.DistributionNotes.Add($"{candidate.Name} [{candidate.FormKey}]: {candidate.Reason}. {candidate.LootReviewReason}");
-                    continue;
-                }
-                if (candidate.SpecializedMode == SpecializedLootMode.SpecializedEnchantedLists)
-                {
-                    // Plan isolated specialized edits after baseline graph discovery.
-                    continue;
-                }
-                if (candidate.SpecializedMode == SpecializedLootMode.SpecializedLists)
-                {
-                    BuildSpecializedPlans(candidate, catalog, profile, plans);
-                    continue;
-                }
-                if (candidate.SpecializedMode == SpecializedLootMode.MerchantFallback)
-                {
-                    BuildMerchantFallbackPlans(candidate, catalog, profile, plans);
-                    continue;
-                }
-                if (candidate.SpecializedMode == SpecializedLootMode.BestAvailable)
-                {
-                    var fallbackKey = FormKey.Factory(candidate.FormKey);
-                    if ((!catalog.BestAvailableFamilies.TryGetValue(fallbackKey, out var cdfFamily) || cdfFamily == SpecializedLootMode.SpecializedEnchantedLists)
-                        && DirectCdfRoutes(fallbackKey, catalog).Length > 0)
-                    {
-                        catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.SpecializedEnchantedLists;
-                        bestAvailableEnchanted.Add(fallbackKey);
+                    case SpecializedLootMode.Disabled:
+                        candidate.Reason = "Specialized loot review: distribution disabled";
+                        catalog.DistributionNotes.Add($"{candidate.Name} [{candidate.FormKey}]: {candidate.Reason}. {candidate.LootReviewReason}");
                         continue;
-                    }
-                    var family = catalog.BestAvailableFamilies.TryGetValue(fallbackKey, out var minimumFamily)
-                        ? minimumFamily : SpecializedLootMode.SpecializedEnchantedLists;
-                    var assessment = AssessSpecializedRoutes(fallbackKey, catalog, profile.AllowOtherMaterialRoutes);
-                    if (family == SpecializedLootMode.SpecializedEnchantedLists && assessment.Routes.Count > 0
-                        && !SpecializedFamilyIntrinsicallyFull(fallbackKey, assessment, catalog, plans))
-                    {
-                        catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.SpecializedEnchantedLists;
-                        bestAvailableEnchanted.Add(fallbackKey);
+                    case SpecializedLootMode.SpecializedEnchantedLists:
+                        // Plan isolated specialized edits after baseline graph discovery.
                         continue;
-                    }
-                    if (family == SpecializedLootMode.SpecializedEnchantedLists && assessment.Routes.Count > 0)
-                        catalog.DistributionNotes.Add($"{candidate.Name} [{fallbackKey}]: specialized enchanted routes have no remaining authored flat-entry capacity; trying the next Best available family.");
-                    if (family != SpecializedLootMode.GeneralLists)
-                    {
-                        catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.SpecializedLists;
-                        var sourceStart = plans.Count;
+                    case SpecializedLootMode.SpecializedLists:
                         BuildSpecializedPlans(candidate, catalog, profile, plans);
-                        if (plans.Skip(sourceStart).Any(p => p.Source.FormKey == fallbackKey && p.Parents.Count > 0)
-                            || catalog.AuthoredCounterpartCoverage.Contains(fallbackKey))
+                        continue;
+                    case SpecializedLootMode.MerchantFallback:
+                        BuildMerchantFallbackPlans(candidate, catalog, profile, plans);
+                        continue;
+                    case SpecializedLootMode.GeneralLists:
+                        break;
+                    case SpecializedLootMode.BestAvailable:
+                    {
+                        var fallbackKey = FormKey.Factory(candidate.FormKey);
+                        if ((!catalog.BestAvailableFamilies.TryGetValue(fallbackKey, out var cdfFamily) || cdfFamily == SpecializedLootMode.SpecializedEnchantedLists)
+                            && DirectCdfRoutes(fallbackKey, catalog).Length > 0)
                         {
-                            candidate.Reason = "Best available — specialized source lists: " + candidate.Reason;
+                            catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.SpecializedEnchantedLists;
+                            bestAvailableEnchanted.Add(fallbackKey);
                             continue;
                         }
-                        // Source planning allocates only for accepted parents.
-                        bestAvailableSourceFailures[fallbackKey] = candidate.Reason;
-                        if (plans.Count > sourceStart) plans.RemoveRange(sourceStart, plans.Count - sourceStart);
+                        var family = catalog.BestAvailableFamilies.TryGetValue(fallbackKey, out var minimumFamily)
+                            ? minimumFamily : SpecializedLootMode.SpecializedEnchantedLists;
+                        var assessment = AssessSpecializedRoutes(fallbackKey, catalog, profile.AllowOtherMaterialRoutes);
+                        if (family == SpecializedLootMode.SpecializedEnchantedLists && assessment.Routes.Count > 0
+                            && !SpecializedFamilyIntrinsicallyFull(fallbackKey, assessment, catalog, plans))
+                        {
+                            catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.SpecializedEnchantedLists;
+                            bestAvailableEnchanted.Add(fallbackKey);
+                            continue;
+                        }
+                        if (family == SpecializedLootMode.SpecializedEnchantedLists && assessment.Routes.Count > 0)
+                            catalog.DistributionNotes.Add($"{candidate.Name} [{fallbackKey}]: specialized enchanted routes have no remaining authored flat-entry capacity; trying the next Best available family.");
+                        if (family != SpecializedLootMode.GeneralLists)
+                        {
+                            catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.SpecializedLists;
+                            var sourceStart = plans.Count;
+                            BuildSpecializedPlans(candidate, catalog, profile, plans);
+                            if (plans.Skip(sourceStart).Any(p => p.Source.FormKey == fallbackKey && p.Parents.Count > 0)
+                                || catalog.AuthoredCounterpartCoverage.Contains(fallbackKey))
+                            {
+                                candidate.Reason = "Best available — specialized source lists: " + candidate.Reason;
+                                continue;
+                            }
+                            // Source planning allocates only for accepted parents.
+                            bestAvailableSourceFailures[fallbackKey] = candidate.Reason;
+                            if (plans.Count > sourceStart) plans.RemoveRange(sourceStart, plans.Count - sourceStart);
+                        }
+                        catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.GeneralLists;
+                        break;
                     }
-                    catalog.BestAvailableFamilies[fallbackKey] = SpecializedLootMode.GeneralLists;
+                    // Script distribution was skipped above; review assigns only defined modes.
+                    case SpecializedLootMode.ScriptDistribution:
+                    default:
+                        throw new InvalidOperationException(
+                            $"No planner handles distribution mode {candidate.SpecializedMode} for {candidate.Name} [{candidate.FormKey}].");
                 }
             }
             trace = []; stage = "source-context";
@@ -997,8 +1011,6 @@ public static partial class PatcherEngine
             var controls = SourceGlobalControls(key, catalog);
             var unlocks = catalog.ScriptUnlocks.GetValueOrDefault(key, []);
             if (generalMixing) unlocks = unlocks.Where(u => PlacementProofs().Any(p => p.Unlock == u)).ToList();
-            MaterialAvailabilityPath? runtimeAvailability = null;
-            short runtimeMinimum = 1;
             var windowProblem = unlocks.Select(unlock => OrdinaryScriptWindowProblem(key, unlock, catalog)).FirstOrDefault(problem => problem is not null);
             if (!generalMixing && windowProblem is null && unlocks.Count > 0)
             {
@@ -1011,11 +1023,6 @@ public static partial class PatcherEngine
                 {
                     var paths = runtimeProofs.Where(proof => proof.Unlock is not null).Select(proof => proof.Availability).DistinctBy(path => path.Identity).ToArray();
                     if (paths.Length != 1) windowProblem = "alternative runtime source-control paths require route-specific review";
-                    else
-                    {
-                        runtimeAvailability = paths[0];
-                        runtimeMinimum = runtimeProofs.Where(proof => proof.Unlock is not null).Max(proof => proof.Level);
-                    }
                 }
             }
             if (windowProblem is not null)
@@ -1028,17 +1035,19 @@ public static partial class PatcherEngine
             if (!generalMixing && triggers.Length > 1)
             {
                 candidate.Reason = "Availability protected: multiple quest insertion triggers need route-specific review";
+                catalog.DistributionNotes.Add($"{candidate.Name} [{key}]: {candidate.Reason}");
                 continue;
             }
             IMajorRecordGetter source = catalog.Weapons.GetValueOrDefault(key) ?? (IMajorRecordGetter)catalog.Armors[key];
             var cls = CachedClass(source, catalog);
             var shape = CachedShape(source, catalog);
-            var exactAvailable = cls is null ? null : catalog.TemplatesByClass.GetValueOrDefault(ClassKey(cls));
-            var broad = profile.BroadUnmatchedDistribution && shape is not null
-                && (cls is null || !IsOwnBaseMaterial(cls.Material))
-                && (cls is null || exactAvailable is null || exactAvailable.Count == 0);
+            var (unrestricted, broad) = ExactOrBroadTemplates(profile.BroadUnmatchedDistribution, cls, shape, catalog);
+            // Both broad paths below need the setting and a shape.
+            var broadMaterials = profile.BroadUnmatchedDistribution && shape is not null ? BroadMaterials(shape) : "";
 
-            TypedLootUse[] PlacementUses() => ParentlessSourceUses(key, catalog);
+            // The uses read the frozen graph, the source's parents and its unlocks: one array serves the candidate.
+            TypedLootUse[]? placementUses = null;
+            TypedLootUse[] PlacementUses() => placementUses ??= ParentlessSourceUses(key, catalog);
             // Exact ordinary routes use the existing provenance/consumer proofs.
             // Broad routes use the same proof authority, including compound controls and quest unlocks.
             var ordinarySourceProofs = !broad && controls.Length > 0 && triggers.Length == 0
@@ -1056,38 +1065,39 @@ public static partial class PatcherEngine
             }
             var sourceUses = sourceProofs is null ? null : PlacementUses();
             var sourceMatcher = sourceProofs is null ? null : new MaterialSourceMatcher(sourceUses!, sourceProofs);
-            var sourceGlobal = controls.Length == 1 ? controls[0] : default;
-            var firstEdge = catalog.FallbackEdges.Count;
-            var broadAvailabilityEdges = new HashSet<FallbackEdge>();
             var allowDirectSharedItems = controls.Length == 0 && triggers.Length == 0;
-            var unrestricted = broad ? catalog.Templates.Where(t => ShapeMatches(shape!, t.Class)).ToList() : exactAvailable;
             // Exact-or-broad is decided before the author's list narrows the templates.
             var available = SourceTemplates(key, unrestricted, catalog);
             if (available is null || available.Count == 0)
             {
                 candidate.Reason = unrestricted is { Count: > 0 } ? AuthorListLeavesNoTemplate : "No compatible enchantment templates";
+                catalog.DistributionNotes.Add($"{candidate.Name} [{key}]: {candidate.Reason}");
                 continue;
             }
-            // Items classified by enchanted access are confined to their access destinations. An explicit
-            // "General lists" review choice keeps the baseline rules.
-            var accessRoots = candidate.RequiresLootReview ? null : catalog.AccessDestinations.GetValueOrDefault(key);
-            var confineBroad = !candidate.RequiresLootReview;
+            // Items classified by enchanted access are confined to their access destinations, and
+            // broad routes to source recipient contexts. Only a general-mixing choice (General lists,
+            // Best available) lifts both; the mode dispatch above admits no other review mode.
+            var accessRoots = generalMixing ? null : catalog.AccessDestinations.GetValueOrDefault(key);
+            var confineBroad = !generalMixing;
             if (accessRoots is not null)
             {
                 sourceProofs ??= PlacementProofs();
                 sourceUses = PlacementUses();
-                sourceMatcher = new MaterialSourceMatcher(sourceUses, sourceProofs);
+                sourceMatcher ??= new MaterialSourceMatcher(sourceUses, sourceProofs);
             }
-            Func<FormKey, (MaterialSourceProof? Proof, FormKey[] Path, LootRecipientEdge? Recipient)[]> CreateContextResolver(
+            // The review gives every candidate that reaches here enchanted access or a general-mixing mode.
+            if (sourceProofs is null) throw new InvalidOperationException($"{candidate.Name} [{key}] reached general placement without source proofs.");
+            Func<FormKey, (MaterialSourceProof Proof, FormKey[] Path, LootRecipientEdge? Recipient)[]> CreateContextResolver(
                 MaterialSourceProof[] proofs, Func<TypedLootUse, MaterialSourceProof, bool>? include = null)
             {
                 var uses = PlacementUses();
-                var matcher = new MaterialSourceMatcher(uses, proofs);
+                // A matcher reads only its uses and proofs; the source's own proofs already have one.
+                var matcher = proofs == sourceProofs ? sourceMatcher! : new MaterialSourceMatcher(uses, proofs);
                 var consumers = uses.Select(u => (u.Consumer, u.Role)).ToHashSet();
-                var contexts = new Dictionary<FormKey, (MaterialSourceProof? Proof, FormKey[] Path, LootRecipientEdge? Recipient)[]>();
+                var contexts = new Dictionary<FormKey, (MaterialSourceProof Proof, FormKey[] Path, LootRecipientEdge? Recipient)[]>();
                 SourceAuthorisationIndex? index = null;
                 return Resolve;
-                (MaterialSourceProof? Proof, FormKey[] Path, LootRecipientEdge? Recipient)[] Resolve(FormKey target)
+                (MaterialSourceProof Proof, FormKey[] Path, LootRecipientEdge? Recipient)[] Resolve(FormKey target)
                 {
                     if (contexts.TryGetValue(target, out var cached)) return cached;
                     // Every target of this source shares the index's fits and match verdicts.
@@ -1102,22 +1112,13 @@ public static partial class PatcherEngine
                         bool RequiresProof(TypedLootUse use) => consumers.Contains((use.Consumer, use.Role));
                         // The matcher already caches each use's requirement; a per-proof verdict
                         // table cost more in inserts and resizes than the lookups it saved.
-                        bool Indexed(TypedLootUse use) => Matches(use);
-                        var paths = SpecializedContextPaths(target, proof.Uses, false, catalog, Indexed, RequiresProof,
+                        var paths = SpecializedContextPaths(target, proof.Uses, false, catalog, Matches, RequiresProof,
                             index.BoundaryFits(proofIndex));
                         var evidence = new List<string>();
-                        var recipients = LootRecipientContexts(target, Indexed, catalog, paths, evidence);
-                        if (CompareAuthorisation)
-                        {
-                            var searchedPaths = SpecializedContextPaths(target, proof.Uses, false, catalog, Matches, RequiresProof);
-                            var searchedEvidence = new List<string>();
-                            var searchedRecipients = LootRecipientContexts(target, Matches, catalog, searchedPaths, searchedEvidence);
-                            RequireSameSourceContexts(key, target, proof.Identity, paths, recipients, evidence,
-                                searchedPaths, searchedRecipients, searchedEvidence);
-                        }
+                        var recipients = LootRecipientContexts(target, Matches, catalog, paths, evidence);
                         results[proofIndex] = (paths, recipients, evidence);
                     }
-                    if (CompareAuthorisation || proofs.Length < ParallelContextProofs)
+                    if (proofs.Length < ParallelContextProofs)
                         for (var i = 0; i < proofs.Length; i++) Search(i);
                     else ParallelContextSearch(proofs.Length, Search, catalog);
                     // Report in proof order, exactly as a sequential search would.
@@ -1125,15 +1126,22 @@ public static partial class PatcherEngine
                     foreach (var line in results.SelectMany(r => r.Evidence))
                         if (catalog.ReportedRecipientNotes.Add(line)) catalog.DistributionNotes.Add(line);
                     return contexts[target] = results.SelectMany((r, i) =>
-                        r.Paths.Select(path => ((MaterialSourceProof?)proofs[i], path, (LootRecipientEdge?)null))
-                            .Concat(r.Recipients.Select(c => ((MaterialSourceProof?)proofs[i], c.Path, (LootRecipientEdge?)c.Edge)))).ToArray();
+                        r.Paths.Select(path => (proofs[i], path, (LootRecipientEdge?)null))
+                            .Concat(r.Recipients.Select(c => (proofs[i], c.Path, (LootRecipientEdge?)c.Edge)))).Where(Copyable).ToArray();
+                    // Both copy sites copy a recipient's path or one of several nodes; XEP cannot copy a list LLOS creates at startup.
+                    bool Copyable((MaterialSourceProof, FormKey[] Path, LootRecipientEdge? Recipient) c)
+                    {
+                        if (c.Path.Length == 1 && c.Recipient is null || catalog.LlosLists?.TouchesGenerated(catalog.Lists, c.Path) != true) return true;
+                        Reject("LlosStartupList", target, "A list on the copied path is created by LLOS at startup; XEP cannot copy it");
+                        return false;
+                    }
                 }
             }
-            var exactContexts = sourceProofs is null || generalMixing ? null : CreateContextResolver(sourceProofs);
-            Func<FormKey, (MaterialSourceProof? Proof, FormKey[] Path, LootRecipientEdge? Recipient)[]>? broadContextResolver = null;
-            (MaterialSourceProof? Proof, FormKey[] Path, LootRecipientEdge? Recipient)[] SourceContexts(FormKey target)
-                => generalMixing ? PlacementProofs().Select(p => ((MaterialSourceProof?)p, new[] { target }, (LootRecipientEdge?)null)).ToArray()
-                    : exactContexts?.Invoke(target) ?? [(null, [target], null)];
+            var exactContexts = generalMixing ? null : CreateContextResolver(sourceProofs);
+            Func<FormKey, (MaterialSourceProof Proof, FormKey[] Path, LootRecipientEdge? Recipient)[]>? broadContextResolver = null;
+            (MaterialSourceProof Proof, FormKey[] Path, LootRecipientEdge? Recipient)[] SourceContexts(FormKey target)
+                => generalMixing ? PlacementProofs().Select(p => (p, new[] { target }, (LootRecipientEdge?)null)).ToArray()
+                    : exactContexts!(target);
             (short Minimum, int Maximum) PlacementWindow(MaterialSourceProof proof, short templateMinimum, FormKey sibling)
                 => (Math.Max(templateMinimum, proof.Level), Math.Min(proof.Availability.MaximumLevel,
                     sibling.IsNull ? ushort.MaxValue : SelectionEntryMaximum(catalog.Lists[sibling], templateMinimum)));
@@ -1217,8 +1225,8 @@ public static partial class PatcherEngine
                         if (!ContextCovered(consumer, role, proof, effectiveMinimum, maximum)) windows.Add((effectiveMinimum, maximum));
                     }
                 }
-                (MaterialSourceProof? Proof, FormKey[] Path, LootRecipientEdge? Recipient)[] UncoveredSourceContexts(PoolRoute route)
-                    => !generalMixing && sourceProofs is not null && plannedRecipientContexts.Count > 0
+                (MaterialSourceProof Proof, FormKey[] Path, LootRecipientEdge? Recipient)[] UncoveredSourceContexts(PoolRoute route)
+                    => !generalMixing && plannedRecipientContexts.Count > 0
                         // A fresh resolver keeps its fits/index cache scoped to this
                         // coverage snapshot; partial overlaps use the existing isolation search.
                         ? CreateContextResolver(sourceProofs, (u, p) =>
@@ -1247,11 +1255,10 @@ public static partial class PatcherEngine
                                 return !ContextCovered(u.Consumer, u.Role, p, window.Minimum, window.Maximum);
                             })(route.Parent)
                             : (broadContextResolver ??= CreateContextResolver(PlacementProofs()))(route.Parent)
-                        : PlacementProofs().Select(p => ((MaterialSourceProof?)p, new[] { route.Parent }, (LootRecipientEdge?)null)).ToArray();
+                        : PlacementProofs().Select(p => (p, new[] { route.Parent }, (LootRecipientEdge?)null)).ToArray();
                     var accepted = new List<(MaterialSourceProof, FormKey[], LootRecipientEdge?)>();
                     foreach (var (proof, path, recipient) in contexts)
                     {
-                        if (proof is null) continue;
                         var (level, maximum) = PlacementWindow(proof, route.TierLevel, route.SiblingOf);
                         if (level > maximum)
                         {
@@ -1289,16 +1296,14 @@ public static partial class PatcherEngine
                         if (catalog.CdfInventory?.Removals.Any == true && !CdfOutputAvailable(key, route.Template,
                             SpecializedGraph(catalog).Endpoints(path[^1]).Where(u => recipient is null
                                 || u.Consumer == recipient.Consumer && u.Role == recipient.Role), catalog, identity)) continue;
-                        var context = recipient is null ? Ancestors(path[^1]) : [];
+                        var context = recipient is null ? Ancestors(path[^1]) : NoAncestors;
                         if (SetsOverlap(context, occupied) || RecipientCovered(recipient)
                             || broadCoverage.TryGetValue(proof.ControlIdentity, out var covered) && SetsOverlap(context, covered)
                             || recipient is not null && ContextCovered(recipient.Consumer, recipient.Role, proof, window.Minimum, window.Maximum))
                         { Reject("EquivalentAlreadyInAncestorTree", route.Parent); continue; }
                         var target = recipient is not null ? LootRecipientCopy(path, recipient, candidate.Category, catalog)
                             : path.Length > 1 ? IsolatedCopy(path, candidate.Category, catalog) : route.Parent;
-                        var edgeStart = catalog.FallbackEdges.Count;
                         var pool = EnsureBroadPool(source, shape!, target, proof, route.SiblingOf, route.BranchDepth, route.Weight);
-                        broadAvailabilityEdges.UnionWith(catalog.FallbackEdges.Skip(edgeStart));
                         destinations.Add(new(pool, Math.Max(route.TierLevel, proof.Level), 1));
                         parentTemplates.TryAdd(pool, route.Template);
                         // Reserve only successful placement, separately for independent controls/unlocks.
@@ -1311,7 +1316,7 @@ public static partial class PatcherEngine
                 }
                 if (broad)
                 {
-                    var routes = routeTemplates.SelectMany(t => BroadRoutes(t, shape!)).Where(AuthorAllowsBroad).ToArray();
+                    var routes = routeTemplates.SelectMany(t => BroadRoutes(t, shape!, broadMaterials)).Where(AuthorAllowsBroad).ToArray();
                     var preferred = AuthorizedBroadRoutes(routes);
                     var broadTemplate = generationTemplate;
                     var broadIdentity = VariantIdentity(broadTemplate.Item, broadTemplate.Enchantment, catalog);
@@ -1394,15 +1399,15 @@ public static partial class PatcherEngine
                 var routeRanks = preferredRoutes.GroupBy(x => x.Route).ToDictionary(g => g.Key, g => g.Min(x => x.Rank));
                 var targets = new List<ParentEntry>();
                 var sourceRouteWithheld = false;
-                var sourceSeeds = enchantedContexts.Where(x => source is IWeaponGetter
-                        ? CachedCharge(x.Item, catalog) == CachedCharge(template.Item, catalog)
-                        : TryEnchantment(x.Item, out var e) && EffectIdentity(e, catalog) == EffectIdentity(template.Enchantment, catalog)).ToArray();
                 var options = preferredRoutes.Select(x => x.Route).Distinct().ToList();
                 var provingTemplates = preferredRoutes.GroupBy(x => x.Route)
                     .ToDictionary(g => g.Key, g => g.Select(x => x.Template).DistinctBy(t => t.Item.FormKey).ToList());
                 var usedProvider = preferredRoutes.FirstOrDefault()?.Provider;
                 if (options.Count == 0)
                 {
+                    var sourceSeeds = enchantedContexts.Where(x => source is IWeaponGetter
+                            ? CachedCharge(x.Item, catalog) == CachedCharge(template.Item, catalog)
+                            : TryEnchantment(x.Item, out var e) && EffectIdentity(e, catalog) == EffectIdentity(template.Enchantment, catalog)).ToArray();
                     var lowerBound = equivalentTemplates.SelectMany(t => t.Parents).Select(p => p.Level).DefaultIfEmpty((short)1).Min();
                     foreach (var seed in sourceSeeds)
                     {
@@ -1427,7 +1432,7 @@ public static partial class PatcherEngine
                 if (options.Count == 0 && profile.BroadUnmatchedDistribution && shape is not null
                     && !IsOwnBaseMaterial(exactClass.Material))
                 {
-                    var routes = routeTemplates.SelectMany(t => BroadRoutes(t, shape)).ToArray();
+                    var routes = routeTemplates.SelectMany(t => BroadRoutes(t, shape, broadMaterials)).ToArray();
                     foreach (var route in AuthorizedBroadRoutes(routes))
                         if (AttachBroad(route, targets))
                         {
@@ -1463,20 +1468,21 @@ public static partial class PatcherEngine
                         }
                         foreach (var (proof, path, recipient) in contexts)
                         {
-                            var recipients = catalog.CdfInventory?.Removals.Any == true
-                                ? SpecializedGraph(catalog).Endpoints(path[^1]).Where(u => recipient is null
-                                    || u.Consumer == recipient.Consumer && u.Role == recipient.Role)
-                                : Enumerable.Empty<TypedLootUse>();
-                            var provingTemplate = catalog.CdfInventory?.Removals.Any != true ? witnesses[0]
-                                : witnesses.FirstOrDefault(w => CdfOutputAvailable(key, w, recipients, catalog, identity, reportRefusal: false));
-                            if (provingTemplate is null)
+                            // Native removals that do not reach the first witness leave it proving every context.
+                            var provingTemplate = witnesses[0];
+                            if (CdfRemovalsReach(key, witnesses[0], default, catalog))
                             {
-                                CdfOutputAvailable(key, witnesses[0], recipients, catalog, identity);
-                                sourceRouteWithheld = true; Reject("CdfRemoval", target.List, "Source/counterpart survival is unproved after native removals"); continue;
+                                var recipients = SpecializedGraph(catalog).Endpoints(path[^1]).Where(u => recipient is null
+                                    || u.Consumer == recipient.Consumer && u.Role == recipient.Role);
+                                provingTemplate = witnesses.FirstOrDefault(w => CdfOutputAvailable(key, w, recipients, catalog, identity, reportRefusal: false));
+                                if (provingTemplate is null)
+                                {
+                                    CdfOutputAvailable(key, witnesses[0], recipients, catalog, identity);
+                                    sourceRouteWithheld = true; Reject("CdfRemoval", target.List, "Source/counterpart survival is unproved after native removals"); continue;
+                                }
                             }
-                            var (itemLevel, maximum) = proof is null ? (Math.Max(route.ItemLevel, (short)1), (int)ushort.MaxValue)
-                                : PlacementWindow(proof, route.ItemLevel, route.SiblingOf);
-                            if (proof is not null && itemLevel > maximum)
+                            var (itemLevel, maximum) = PlacementWindow(proof, route.ItemLevel, route.SiblingOf);
+                            if (itemLevel > maximum)
                             {
                                 sourceRouteWithheld = true;
                                 var windowRefusal = $"source and enchantment level windows do not overlap (minimum {itemLevel}, maximum {maximum})";
@@ -1484,10 +1490,10 @@ public static partial class PatcherEngine
                                 catalog.DistributionNotes.Add($"{candidate.Name} [{key}]: {windowRefusal}");
                                 continue;
                             }
-                            if (generalMixing && proof is not null && route.DirectItemPlacement
+                            if (generalMixing && route.DirectItemPlacement
                                 && (proof.Availability.Controls.Length > 0 || proof.Unlock is not null))
                             { sourceRouteWithheld = true; Reject("DirectSourceAvailabilityUnproved", target.List, "A direct equipment position cannot carry the required source controls/window"); continue; }
-                            if (proof is not null && route.DirectItemPlacement && !generalMixing)
+                            if (route.DirectItemPlacement && !generalMixing)
                             {
                                 var directKey = (target.List, path[^1], recipient?.Consumer ?? FormKey.Null, recipient?.Role, proof.Identity, route.ItemLevel);
                                 if (!directLevels.TryGetValue(directKey, out var direct))
@@ -1509,17 +1515,17 @@ public static partial class PatcherEngine
                                 { sourceRouteWithheld = true; Reject("DirectSourceAvailabilityUnproved", target.List, direct.Problem!); continue; }
                                 itemLevel = directLevel;
                             }
-                            var context = recipient is null ? Ancestors(path[^1]) : [];
+                            var context = recipient is null ? Ancestors(path[^1]) : NoAncestors;
                             if (SetsOverlap(context, occupied) || RecipientCovered(recipient)
-                                || generalMixing && proof is not null && broadCoverage.TryGetValue(proof.ControlIdentity, out var covered) && SetsOverlap(context, covered)
-                                || recipient is not null && proof is not null && ContextCovered(recipient.Consumer, recipient.Role, proof, itemLevel, maximum)) { Reject("EquivalentAlreadyInAncestorTree", target.List); continue; }
-                            if (generalMixing && proof is not null)
+                                || generalMixing && broadCoverage.TryGetValue(proof.ControlIdentity, out var covered) && SetsOverlap(context, covered)
+                                || recipient is not null && ContextCovered(recipient.Consumer, recipient.Role, proof, itemLevel, maximum)) { Reject("EquivalentAlreadyInAncestorTree", target.List); continue; }
+                            if (generalMixing)
                             {
                                 if (!broadCoverage.TryGetValue(proof.ControlIdentity, out var placed)) broadCoverage[proof.ControlIdentity] = placed = [];
                                 placed.UnionWith(context);
                             }
                             else occupied.UnionWith(context);
-                            if (proof is not null) CoverRecipients(path, recipient, proof, Math.Max(itemLevel, target.Level), maximum);
+                            CoverRecipients(path, recipient, proof, Math.Max(itemLevel, target.Level), maximum);
                             target = route.Parent with { List = recipient is not null ? LootRecipientCopy(path, recipient, candidate.Category, catalog)
                                 : path.Length > 1 ? IsolatedCopy(path, candidate.Category, catalog) : route.Parent.List };
                             if (route.DirectItemPlacement)
@@ -1533,12 +1539,11 @@ public static partial class PatcherEngine
                             // edge: the window max(edge, entry) is unchanged, and proofs that differ
                             // only by minimum level share one pool. A highest-eligible target keeps the
                             // minimum on the variant entry, where raising an edge would change siblings.
-                            var levelOnEdge = proof is not null && ((int)catalog.Lists[target.List].Flags & 1) != 0;
+                            var levelOnEdge = ((int)catalog.Lists[target.List].Flags & 1) != 0;
                             var entryLevel = levelOnEdge ? (short)Math.Max(route.ItemLevel, (short)1) : itemLevel;
-                            var edgeLevel = proof is null ? target.Level
-                                : (short)Math.Max(Math.Max(target.Level, proof.Unlock?.Level ?? target.Level), levelOnEdge ? proof.Level : target.Level);
+                            var edgeLevel = (short)Math.Max(Math.Max(target.Level, proof.Unlock?.Level ?? target.Level), levelOnEdge ? proof.Level : target.Level);
                             var poolIdentity = (key, route.Parent.List, target.Level, route.SiblingOf,
-                                proof is null ? "" : levelOnEdge ? "minimum-on-edge|" + proof.ControlIdentity : proof.Identity);
+                                levelOnEdge ? "minimum-on-edge|" + proof.ControlIdentity : proof.Identity);
                             if (!pools.TryGetValue(poolIdentity, out var pool))
                             {
                                 pool = new FormKey(FallbackPlanningMod, (uint)(catalog.Fallbacks.Count + 1));
@@ -1552,8 +1557,7 @@ public static partial class PatcherEngine
                             }
                             if (attachedPools.Add((pool, target.List, edgeLevel)))
                             {
-                                if (proof is null) catalog.FallbackEdges.Add(new(target, pool));
-                                else AttachOtherMaterialBranch(key, new(target with { Level = edgeLevel }, pool, proof.Availability, proof.Unlock), catalog, share: true);
+                                AttachOtherMaterialBranch(key, new(target with { Level = edgeLevel }, pool, proof.Availability, proof.Unlock), catalog, share: true);
                             }
                             var poolEntry = new ParentEntry(pool, entryLevel, 1);
                             if (!targets.Contains(poolEntry)) targets.Add(poolEntry);
@@ -1571,13 +1575,6 @@ public static partial class PatcherEngine
                     : "Existing enchanted source-item route fallback";
                 if (subtype is null) Reject("UnknownSourceSubtype", key);
                 plans.Add(new(candidate, source, template, targets, reused, reason, targets.Count == 0 ? trace.Order().ToArray() : [], ParentTemplates: parentTemplates));
-            }
-            if (sourceProofs is null)
-            {
-                var runtimeUnlock = triggers.SingleOrDefault();
-                if (runtimeUnlock is not null && runtimeAvailability is not null)
-                    runtimeUnlock = runtimeUnlock with { Level = Math.Max(runtimeUnlock.Level, runtimeMinimum) };
-                ProtectSourceEdges(key, sourceGlobal, runtimeUnlock, firstEdge, catalog, broadAvailabilityEdges, runtimeAvailability);
             }
             BuildOrdinarySpecialLootPlans(candidate, catalog, profile, plans);
             var own = plans.Skip(starting).ToArray();

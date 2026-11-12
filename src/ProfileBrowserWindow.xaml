@@ -3,7 +3,7 @@
         <TextBlock DockPanel.Dock="Top" Text="Choose a profile" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,14" />
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
             <Button Content="Cancel" IsCancel="True" Margin="0,0,8,0" ToolTip="Close without switching profiles." />
-            <Button Content="Select" IsDefault="True" Click="Select" ToolTip="Load the highlighted profile's patching choices and rescan. Data and Output folders stay shared." />
+            <Button Content="Select" IsDefault="True" Click="Select" ToolTip="Load the highlighted profile's patching choices. Data and Output folders stay shared." />
         </StackPanel>
         <ListBox x:Name="Profiles" MouseDoubleClick="Select" AutomationProperties.Name="Saved profiles" ToolTip="Select a saved set of patching choices, then choose Select or double-click it to switch. Data and Output folders stay shared." />
     </DockPanel>

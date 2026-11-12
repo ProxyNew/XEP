@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.IO;
 
@@ -42,73 +43,89 @@ public static class Cli
         finally { Console.SetOut(oldOut); Console.SetError(oldError); }
     }
 
+    // Run choices read from the command line. ApplyArguments has already applied
+    // the folder and profile-setting options to the settings.
+    internal sealed class RunArguments
+    {
+        public bool ScanOnly, PreviewOnly, ListProviders, Help;
+        public string? ScanJson, CdfInputData;
+        public readonly List<string> ProviderOverrides = [];
+        public readonly Dictionary<string, PatchPolicy> Selections = new(StringComparer.OrdinalIgnoreCase);
+        public readonly Dictionary<string, bool> ItemSelections = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    // --profile selects a saved profile before any profile setting applies, wherever
+    // it appears. Stops at --help without reading the options after it.
+    internal static RunArguments ApplyArguments(string[] args, AppSettings settings)
+    {
+        var run = new RunArguments();
+        string? profileName = null;
+        var profileChanges = new List<Action<ProfileSettings>>();
+        // The value is read and checked now; the change waits for the selected profile.
+        void Profile<T>(T value, Action<ProfileSettings, T> set) => profileChanges.Add(profile => set(profile, value));
+        for (var i = 0; i < args.Length; i++)
+        {
+            string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"Missing value for {args[i - 1]}.");
+            switch (args[i])
+            {
+                case "--data": settings.DataFolder = Path.GetFullPath(Value()); break;
+                case "--cdf-input-data": run.CdfInputData = Path.GetFullPath(Value()); break;
+                case "--output-folder": settings.OutputFolder = Path.GetFullPath(Value()); break;
+                case "--provider": run.ProviderOverrides.Add(Value()); break;
+                case "--providers": run.ListProviders = true; break;
+                case "--profile": profileName = profileName is null ? Value() : throw new ArgumentException("--profile may be given only once."); break;
+                case "--warning-list-size": Profile(WarningListSize(Value()), (p, size) => p.WarningListEntries = size); break;
+                case "--scan": run.ScanOnly = true; break;
+                case "--preview": run.PreviewOnly = true; break;
+                case "--no-save": break;
+                case "--log": _ = Value(); break;
+                case "--specialized-enchanted":
+                    Profile(Mutagen.Bethesda.Plugins.FormKey.Factory(Value()).ToString(),
+                        (p, key) => p.SpecializedLootOverrides[key] = SpecializedLootMode.SpecializedEnchantedLists);
+                    break;
+                case "--material-expansion": Profile(bool.Parse(Value()), (p, on) => p.AllowOtherMaterialRoutes = on); break;
+                case "--broad-unmatched": Profile(bool.Parse(Value()), (p, on) => p.BroadUnmatchedDistribution = on); break;
+                case "--resolve-leveled-list-conflicts": Profile(bool.Parse(Value()), (p, on) => p.ResolveLeveledListConflicts = on); break;
+                case "--keep-undistributed": Profile(bool.Parse(Value()), (p, on) => p.KeepUndistributedVariants = on); break;
+                case "--full-output-plugin": Profile(bool.Parse(Value()), (p, on) => p.FullOutputPlugin = on); break;
+                case "--scan-json": run.ScanJson = Path.GetFullPath(Value()); break;
+                case "--existing": run.Selections[Value()] = PatchPolicy.ExistingDistribution; break;
+                case "--exclude": run.Selections[Value()] = PatchPolicy.Exclude; break;
+                case "--include-item": run.ItemSelections[Value()] = true; break;
+                case "--exclude-item": run.ItemSelections[Value()] = false; break;
+                case "--help": run.Help = true; return run;
+                default: throw new ArgumentException($"Unknown option {args[i]}.");
+            }
+        }
+        if (profileName is not null)
+        {
+            // Never create a profile here: a mistyped name would be saved as the new active profile.
+            if (!settings.Profiles.ContainsKey(profileName.Trim()))
+                throw new ArgumentException($"Unknown profile \"{profileName}\". Saved profiles: "
+                    + string.Join(", ", settings.Profiles.Keys.Order(StringComparer.OrdinalIgnoreCase)) + ". Create profiles in the graphical interface.");
+            SettingsStore.SelectExistingProfile(settings, profileName);
+        }
+        foreach (var change in profileChanges) change(settings.CurrentProfile);
+        return run;
+    }
+
+    private static int WarningListSize(string text) => int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var size)
+        ? Math.Clamp(size, 1, 255)
+        : throw new ArgumentException($"--warning-list-size needs a whole number (values outside 1-255 are clamped), not \"{text}\".");
+
     private static int RunCore(string[] args, CliRunOptions options)
     {
         try
         {
             var settings = SettingsStore.Load();
-            var scanOnly = false;
-            var previewOnly = false;
-            var listProviders = false;
-            var providerOverrides = new List<string>();
-            var distributionProviderOverrides = new List<string>();
-            var selections = new Dictionary<string, PatchPolicy>(StringComparer.OrdinalIgnoreCase);
-            var itemSelections = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-            string? scanJson = null;
-            string? merchantPreflight = null;
-            string? cdfInputData = null;
-            for (var i = 0; i < args.Length; i++)
-            {
-                string Value() => ++i < args.Length ? args[i] : throw new ArgumentException($"Missing value for {args[i - 1]}.");
-                switch (args[i])
-                {
-                    case "--data": settings.DataFolder = Path.GetFullPath(Value()); break;
-                    case "--cdf-input-data": cdfInputData = Path.GetFullPath(Value()); break;
-                    case "--output-folder": settings.OutputFolder = Path.GetFullPath(Value()); break;
-                    case "--provider": providerOverrides.Add(Value()); break;
-                    case "--distribution-provider": distributionProviderOverrides.Add(Value()); break;
-                    case "--clear-distribution-providers": Console.WriteLine("Legacy --clear-distribution-providers ignored: ordered --provider arguments now set priority."); break;
-                    case "--thaumaturgy": providerOverrides.Add(Value()); break;
-                    case "--providers": listProviders = true; break;
-                    case "--profile": SettingsStore.SelectProfile(settings, Value()); break;
-                    case "--distribution":
-                        _ = Value();
-                        Console.WriteLine("Legacy --distribution ignored: distribution now follows source equipment.");
-                        break;
-                    case "--general-root": _ = Value(); Console.WriteLine("Legacy --general-root ignored: enchanted routes are discovered automatically."); break;
-                    case "--clear-general-roots": Console.WriteLine("Legacy --clear-general-roots ignored: manual roots have been retired."); break;
-                    case "--warning-list-size": settings.CurrentProfile.WarningListEntries = Math.Clamp(int.Parse(Value()), 1, 255); break;
-                    case "--scan": scanOnly = true; break;
-                    case "--preview": previewOnly = true; break;
-                    case "--no-save": break;
-                    case "--compare-authorisation": PatcherEngine.EnableAuthorisationComparison(); break;
-                    case "--log": _ = Value(); break;
-                    case "--specialized-enchanted":
-                        settings.CurrentProfile.SpecializedLootOverrides[Mutagen.Bethesda.Plugins.FormKey.Factory(Value()).ToString()] = SpecializedLootMode.SpecializedEnchantedLists;
-                        break;
-                    case "--material-expansion": settings.CurrentProfile.AllowOtherMaterialRoutes = bool.Parse(Value()); break;
-                    case "--broad-unmatched": settings.CurrentProfile.BroadUnmatchedDistribution = bool.Parse(Value()); break;
-                    case "--resolve-leveled-list-conflicts": settings.CurrentProfile.ResolveLeveledListConflicts = bool.Parse(Value()); break;
-                    case "--keep-undistributed": settings.CurrentProfile.KeepUndistributedVariants = bool.Parse(Value()); break;
-                    case "--full-output-plugin": settings.CurrentProfile.FullOutputPlugin = bool.Parse(Value()); break;
-                    case "--scan-json": scanJson = Path.GetFullPath(Value()); break;
-                    case "--merchant-source-preflight": merchantPreflight = Path.GetFullPath(Value()); break;
-                    case "--existing": selections[Value()] = PatchPolicy.ExistingDistribution; break;
-                    case "--create-distribution": throw new ArgumentException("Create Distribution has been retired. Use --existing for equipment with an existing source route.");
-                    case "--all": selections[Value()] = PatchPolicy.ExistingDistribution; Console.WriteLine("Legacy --all now uses ExistingDistribution; unrestricted plugin selection has been retired."); break;
-                    case "--general": selections[Value()] = PatchPolicy.ExistingDistribution; Console.WriteLine("Legacy --general now uses ExistingDistribution; unrestricted plugin selection has been retired."); break;
-                    case "--exclude": selections[Value()] = PatchPolicy.Exclude; break;
-                    case "--include-item": itemSelections[Value()] = true; break;
-                    case "--exclude-item": itemSelections[Value()] = false; break;
-                    case "--help": PrintHelp(); return 0;
-                    default: throw new ArgumentException($"Unknown option {args[i]}.");
-                }
-            }
+            var run = ApplyArguments(args, settings);
+            if (run.Help) { PrintHelp(); return 0; }
+            var cdfInputData = run.CdfInputData;
 
             if (cdfInputData is not null)
             {
                 var sessionRoot = SessionRuntime.DirectoryPath is { } directory ? Path.GetFullPath(directory) + Path.DirectorySeparatorChar : null;
-                if (!options.NoSave || (!scanOnly && !previewOnly) || sessionRoot is null ||
+                if (!options.NoSave || (!run.ScanOnly && !run.PreviewOnly) || sessionRoot is null ||
                     !Path.GetFullPath(SettingsStore.PathName).StartsWith(sessionRoot, StringComparison.OrdinalIgnoreCase) ||
                     settings.OutputFolder is null || !Path.GetFullPath(settings.OutputFolder).StartsWith(sessionRoot, StringComparison.OrdinalIgnoreCase))
                     throw new ArgumentException("--cdf-input-data requires an isolated session with private settings/output, --no-save and --scan or --preview.");
@@ -116,27 +133,14 @@ public static class Cli
                 Console.WriteLine("CDF input Data override (private validation): " + cdfInputData);
             }
 
-            if (providerOverrides.Count > 0)
+            if (run.ProviderOverrides.Count > 0)
             {
                 settings.CurrentProfile.UseLoadOrderProviderDefaults = false;
-                settings.CurrentProfile.EnchantmentProviderPlugins = providerOverrides.Where(x => !string.IsNullOrWhiteSpace(x))
+                settings.CurrentProfile.EnchantmentProviderPlugins = run.ProviderOverrides.Where(x => !string.IsNullOrWhiteSpace(x))
                     .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 settings.CurrentProfile.EnchantmentProviderOrder = settings.CurrentProfile.EnchantmentProviderPlugins.ToList();
             }
-            if (distributionProviderOverrides.Count > 0)
-            {
-                if (settings.CurrentProfile.UseLoadOrderProviderDefaults is not false) _ = PatcherEngine.DiscoverProviders(settings);
-                settings.CurrentProfile.UseLoadOrderProviderDefaults = false;
-                var legacyPriority = distributionProviderOverrides.Where(x => !string.IsNullOrWhiteSpace(x))
-                    .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                settings.CurrentProfile.EnchantmentProviderPlugins = legacyPriority
-                    .Where(x => settings.CurrentProfile.EnchantmentProviderPlugins.Contains(x, StringComparer.OrdinalIgnoreCase))
-                    .Concat(settings.CurrentProfile.EnchantmentProviderPlugins.Where(x => !legacyPriority.Contains(x, StringComparer.OrdinalIgnoreCase)))
-                    .ToList();
-                settings.CurrentProfile.EnchantmentProviderOrder = settings.CurrentProfile.EnchantmentProviderPlugins.ToList();
-                Console.WriteLine("Legacy --distribution-provider migrated into the ordered origin list. Pass --provider arguments in highest-to-lowest order instead.");
-            }
-            if (listProviders)
+            if (run.ListProviders)
             {
                 var providers = PatcherEngine.DiscoverProviders(settings);
                 if (providers.Count == 0) Console.WriteLine("No usable enchantment origins are available in the active load order.");
@@ -144,16 +148,10 @@ public static class Cli
                     Console.WriteLine($"{provider.Plugin}\tenchantments={provider.EnchantmentCount}\ttemplates={provider.TemplateCount}");
                 return 0;
             }
-            foreach (var choice in selections) settings.CurrentProfile.Policies[choice.Key] = choice.Value;
-            foreach (var choice in itemSelections) settings.CurrentProfile.ItemOverrides[choice.Key] = choice.Value;
+            foreach (var choice in run.Selections) settings.CurrentProfile.Policies[choice.Key] = choice.Value;
+            foreach (var choice in run.ItemSelections) settings.CurrentProfile.ItemOverrides[choice.Key] = choice.Value;
             SessionRuntime.Settings(SettingsStore.PathName, settings.OutputFolder);
             SessionRuntime.EffectiveSettings(settings);
-            if (merchantPreflight is not null)
-            {
-                PatcherEngine.WriteMerchantSourcePreflight(settings, merchantPreflight);
-                Console.WriteLine($"Read-only merchant source preflight: {merchantPreflight}");
-                return 0;
-            }
             // Preview and Generate reuse this Scan's loaded plugins and analysis.
             var scan = PatcherEngine.ScanWithCdfInputs(settings, out var snapshotHandle, cdfInputData);
             using var snapshot = snapshotHandle;
@@ -162,14 +160,14 @@ public static class Cli
             foreach (var warning in scan.Warnings) Console.WriteLine("WARNING: " + warning);
             Console.WriteLine($"Enchantment origins: {string.Join(", ", settings.CurrentProfile.EnchantmentProviderPlugins)}; active plugins: {scan.ActivePluginCount}; equipment plugins: {scan.Plugins.Count}; eligible items: {scan.Items.Count(x => x.Eligible)}; selected items: {scan.Items.Count(x => x.Selected)}; templates: {scan.TemplateCount}");
             foreach (var p in scan.Plugins) Console.WriteLine($"{p.Plugin}\tdecision={p.Policy}\teligible={p.EligibleItems}\tdistributed={p.DistributedItems}\texcluded={p.ExcludedItems}");
-            if (scanJson is not null) File.WriteAllText(scanJson, JsonSerializer.Serialize(scan, JsonContext.Default.ScanResult));
+            if (run.ScanJson is not null) File.WriteAllText(run.ScanJson, JsonSerializer.Serialize(scan, JsonContext.Default.ScanResult));
             if (!options.NoSave) SettingsStore.Save(settings);
-            if (scanOnly) return 0;
+            if (run.ScanOnly) return 0;
 
             var policies = scan.Plugins.ToDictionary(x => x.Plugin, x => x.Policy, StringComparer.OrdinalIgnoreCase);
             var preview = PatcherEngine.Preview(settings, policies, snapshot);
             PrintPreview(preview);
-            if (previewOnly) return 0;
+            if (run.PreviewOnly) return 0;
             if (policies.Any(x => x.Value == PatchPolicy.Review))
                 throw new InvalidOperationException("Every equipment plugin needs a saved decision before generation. Use --existing or --exclude.");
             // Same settings and policies as the Preview above, so its plans are current.
@@ -179,7 +177,7 @@ public static class Cli
             if (report.BackupFolder is not null) Console.WriteLine($"Previous output backup: {report.BackupFolder}");
             return 0;
         }
-        catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+        catch (Exception ex) { Console.Error.WriteLine(ex is DataFolderMismatchException or OutputInstallException or UnreadableRecordException ? ex.Message : ex.ToString()); return 1; }
     }
 
     private static void PrintPreview(GenerationPreview preview)
@@ -216,13 +214,11 @@ public static class Cli
           --material-expansion BOOL  Override specialized material expansion for this run
           --specialized-enchanted KEY Select specialized enchanted routing for one item
           --scan-json PATH           Write detailed scan JSON
-          --merchant-source-preflight PATH
-                                     Write bounded source/runtime dependency diagnostics only
           --cdf-input-data PATH      Private scan/preview fixture Data root for CDF inputs only;
                                      requires --no-save and isolated session settings/output
           --no-save                  Leave saved settings untouched (options apply to this run only)
           --log PATH                 Write all output to PATH instead of the console
-          --profile NAME             Select or create a saved settings profile
+          --profile NAME             Select a saved settings profile; give once, applies before other options
           --providers                List plugins that originate usable enchantments
           --provider PLUGIN          Enable an origin; repeat in highest-to-lowest priority order
           --output-folder PATH       Output folder; plugin name is fixed
@@ -235,7 +231,7 @@ public static class Cli
           --resolve-leveled-list-conflicts BOOL
                                      Merge unaware LVLI overwrites before analysis and output
           --keep-undistributed BOOL Keep generated variants that lack a safe LVLI destination
+          --full-output-plugin BOOL  Write one regular (non-light) output plugin instead of the light split
           --data PATH                Skyrim Special Edition Data folder
-          --thaumaturgy PLUGIN       Legacy alias for --provider
         """);
 }

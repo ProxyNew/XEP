@@ -11,27 +11,26 @@
     <CetCompat>false</CetCompat>
     <AssemblyName>XEnchantmentPatcher</AssemblyName>
     <RootNamespace>XEnchantmentPatcher</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <ApplicationIcon>Assets\iron-helmet-fire.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <ServerGarbageCollection>true</ServerGarbageCollection>
-    <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <GarbageCollectionAdaptationMode>0</GarbageCollectionAdaptationMode>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The library names its debug file without the build folder path. -->
+    <Features>$(Features);pdb-path-determinism</Features>
   </PropertyGroup>
   <ItemGroup>
     <!-- Keep the separately licensed CLI replaceable and available without a runtime download. -->
     <None Update="ThirdParty\Champollion\*" Link="Champollion\%(Filename)%(Extension)"
-          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Resource Include="Assets\iron-helmet-fire-busy.gif" />
-    <None Include="..\docs\**\*" Link="docs\%(RecursiveDir)%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
-    <None Include="..\LICENSE;..\LICENSING.md;..\THIRD-PARTY-NOTICES.md" Link="%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Include="..\LICENSE;..\LICENSING.md;..\THIRD-PARTY-NOTICES.md" Link="XEnchantmentPatcher-docs\%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" />
     <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.54.4" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\README.md" Link="README.md" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="..\CHANGELOG.md" Link="CHANGELOG.md" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="Runtime\XEP_QuestInsertion.pex" />
     <EmbeddedResource Include="Runtime\XEP_QuestInsertion.psc" />
     <EmbeddedResource Include="Runtime\XEP_ScriptGate.psc" />

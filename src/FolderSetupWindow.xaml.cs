@@ -6,7 +6,7 @@ namespace XEnchantmentPatcher;
 
 public partial class FolderSetupWindow : Window
 {
-    private readonly AppSettings _settings;
+    internal readonly AppSettings _settings;
     public FolderSetupWindow(AppSettings settings)
     {
         _settings = settings;

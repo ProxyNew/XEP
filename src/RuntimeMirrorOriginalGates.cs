@@ -7,10 +7,10 @@ public static partial class PatcherEngine
 {
     // One original control (Global and/or fixed Chance None) reproduced on an owned
     // single-entry list above the counterpart position. The Global is the original record.
-    private sealed record MirrorCopiedControl(FormKey List, FormKey Global, double ChanceNone);
+    internal sealed record MirrorCopiedControl(FormKey List, FormKey Global, double ChanceNone);
     // Original receiver-side gates and actor-level window that the enchanted
     // destination path does not already impose. Empty means nothing is copied.
-    private sealed record MirrorGateCopy(MirrorCopiedControl[] Controls, (int Minimum, int Maximum)[] Window,
+    internal sealed record MirrorGateCopy(MirrorCopiedControl[] Controls, (int Minimum, int Maximum)[] Window,
         (int Minimum, int Maximum)[]? DestinationWindow = null)
     {
         public static readonly MirrorGateCopy None = new([], []);
@@ -22,10 +22,10 @@ public static partial class PatcherEngine
     // inside the payload are reproduced by its projection; receiver-side gates and
     // windows missing from the enchanted destination path are copied onto owned
     // lists above the wrapper (MirrorGateCopy) instead of being refused.
-    private sealed record MirrorGateResult(string? Problem, MirrorGateCopy Copy);
+    internal sealed record MirrorGateResult(string? Problem, MirrorGateCopy Copy);
     // The result reads the source only through its gate paths in the payload tree, so
     // sources with the same walk share it.
-    private static MirrorGateResult MirrorOriginalGate(MirrorSite site, FormKey source, SpecializedRoute route, Catalog catalog)
+    internal static MirrorGateResult MirrorOriginalGate(MirrorSite site, FormKey source, SpecializedRoute route, Catalog catalog)
     {
         using var timing = PhaseTiming.Count("mirror.original-gate-lookup");
         var identity = MirrorGateIdentity.Of(site, MirrorSourcePaths(site, source, SpecializedGraph(catalog)), route);
@@ -176,14 +176,14 @@ public static partial class PatcherEngine
         return new(null, new MirrorGateCopy(controls.ToArray(), copied, destination.Window));
     }
 
-    private sealed record MirrorAncestry(List<(TypedLootUse Use, FormKey[] Gates, int Minimum, int Maximum)> Paths, int Work, bool Incomplete)
+    internal sealed record MirrorAncestry(List<(TypedLootUse Use, FormKey[] Gates, int Minimum, int Maximum)> Paths, int Work, bool Incomplete)
     {
         private readonly Dictionary<TypedLootUse, (TypedLootUse Use, FormKey[] Gates, int Minimum, int Maximum)[]> supporting = [];
         public (TypedLootUse Use, FormKey[] Gates, int Minimum, int Maximum)[] Supporting(TypedLootUse endpoint)
             => supporting.TryGetValue(endpoint, out var known) ? known
                 : supporting[endpoint] = Paths.Where(p => p.Use == endpoint || ExactActorDeathUse(endpoint, p.Use)).ToArray();
     }
-    private sealed record MirrorSourceWalk(List<(FormKey[] Gates, int Minimum, int Maximum)> Paths, int Work, bool Incomplete)
+    internal sealed record MirrorSourceWalk(List<(FormKey[] Gates, int Minimum, int Maximum)> Paths, int Work, bool Incomplete)
     {
         public int[] LevelBoundaries { get; } = Paths.SelectMany(p => new[] { p.Minimum, p.Maximum + 1 }).Distinct().ToArray();
         // Equal for walks with the same paths, work and completeness, whatever the source.
@@ -191,7 +191,7 @@ public static partial class PatcherEngine
         public static string Content(List<(FormKey[] Gates, int Minimum, int Maximum)> paths, int work, bool incomplete)
             => $"{work}|{incomplete}|" + string.Join(";", paths.Select(p => $"{string.Join(">", p.Gates)}:{p.Minimum}-{p.Maximum}"));
     }
-    private sealed record MirrorDestinationWalk(List<(TypedLootUse Endpoint, FormKey[] Gates, int Minimum, int Maximum)> Reached, bool Bad, bool Matched)
+    internal sealed record MirrorDestinationWalk(List<(TypedLootUse Endpoint, FormKey[] Gates, int Minimum, int Maximum)> Reached, bool Bad, bool Matched)
     {
         public (int Minimum, int Maximum)[] Window { get; } = MergeBands(Reached.Select(r => (r.Minimum, r.Maximum))).ToArray();
     }
@@ -213,22 +213,8 @@ public static partial class PatcherEngine
             if (!graph.Lists.TryGetValue(key, out var list)) return;
             if (MirrorUnsupportedLevels(graph, key)) { incomplete = true; return; }
             var nextGates = MirrorGate(graph, key) ? gates.Append(key).ToList() : gates;
-            var giveAll = ((int)list.Flags & 7) is 4 or 5;
-            var highestOnly = !giveAll && ((int)list.Flags & 1) == 0;
-            var rows = LeveledEntryRows(list);
-            foreach (var (level, reference, _, _, _) in rows)
-            {
-                var start = giveAll ? minimum : Math.Max(minimum, level);
-                var end = maximum;
-                if (highestOnly)
-                {
-                    // The next higher entry level bounds this entry's window.
-                    var next = 65535;
-                    foreach (var other in rows) if (other.Level > level) next = Math.Min(next, other.Level - 1);
-                    end = Math.Min(maximum, next);
-                }
-                Visit(reference, nextGates, depth + 1, start, end);
-            }
+            foreach (var (level, reference, _, _, _) in LeveledEntryRows(list))
+                Visit(reference, nextGates, depth + 1, Math.Max(minimum, SelectionEntryMinimum(list, level)), Math.Min(maximum, SelectionEntryMaximum(list, level)));
         }
         Visit(site.Payload, MirrorGate(graph, site.Receiver) ? [site.Receiver] : [], 0, 1, 65535);
         var content = MirrorSourceWalk.Content(paths, work, incomplete);
@@ -286,7 +272,7 @@ public static partial class PatcherEngine
                 if (LeveledEntryRows(owner).Any(e => e.Reference == key && e.HasExtraData)
                     || parent.Count <= 0) { continue; }
                 var start = Math.Max(minimum, SelectionEntryMinimum(owner, parent.Level));
-                var end = HasHighestEligibleCutoff(owner) ? Math.Min(maximum, SelectionEntryMaximum(owner, parent.Level)) : maximum;
+                var end = Math.Min(maximum, SelectionEntryMaximum(owner, parent.Level));
                 AncestorPaths(parent.List, next, active, depth + 1, start, end);
             }
             active.Remove(key);
@@ -333,7 +319,7 @@ public static partial class PatcherEngine
                 if (LeveledEntryRows(owner).Any(e => e.Reference == key && e.HasExtraData)
                     || parent.Count <= 0) { bad = true; continue; }
                 var start = Math.Max(minimum, SelectionEntryMinimum(owner, parent.Level));
-                var end = HasHighestEligibleCutoff(owner) ? Math.Min(maximum, SelectionEntryMaximum(owner, parent.Level)) : maximum;
+                var end = Math.Min(maximum, SelectionEntryMaximum(owner, parent.Level));
                 DestinationPaths(parent.List, nextGates, active, depth + 1, start, end);
             }
             active.Remove(key);
@@ -341,7 +327,7 @@ public static partial class PatcherEngine
         var point = route.MaterialPath is { Count: > 1 } material ? material[^1] : route.Destination.List;
         var terminal = graph.Lists[route.Destination.List];
         var routeMinimum = Math.Max(1, (int)route.Destination.Level);
-        var routeMaximum = HasHighestEligibleCutoff(terminal) ? SelectionEntryMaximum(terminal, route.Destination.Level) : 65535;
+        var routeMaximum = SelectionEntryMaximum(terminal, route.Destination.Level);
         DestinationPaths(point, [], [], 0, routeMinimum, routeMaximum);
         return graph.MirrorDestinations[identity] = new(reached, bad, matchedEndpoint);
     }

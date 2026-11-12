@@ -6,8 +6,8 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record MaterialInference(string Material, string Evidence);
-    private sealed record MaterialResolution(string Material, string Rule, string Evidence, bool Inferred = false,
+    internal sealed record MaterialInference(string Material, string Evidence);
+    internal sealed record MaterialResolution(string Material, string Rule, string Evidence, bool Inferred = false,
         string[]? Choices = null, string? Recommended = null)
     {
         public string[] AvailableChoices => Choices ?? [];
@@ -17,7 +17,7 @@ public static partial class PatcherEngine
     // Keyword EditorIDs, plus materials inferred from crafting evidence for equipment that has
     // no material keyword. Classification order: vanilla-form material keyword, then a
     // <prefix>Material<Name> keyword whose Name is already a known material, then the inference.
-    private sealed class KeywordIndex : Dictionary<FormKey, string>
+    internal sealed class KeywordIndex : Dictionary<FormKey, string>
     {
         public KeywordIndex(IDictionary<FormKey, string> names) : base(names)
         {

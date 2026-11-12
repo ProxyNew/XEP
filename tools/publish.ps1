@@ -1,5 +1,5 @@
 # Publish into Compiled, or a NEW side-by-side destination for revision comparisons.
-# Archives only the replaced EXE/PDB. Does not overwrite an active published build.
+# Drops libraries of a replaced build that the new build lacks; never replaces an active build.
 param([string]$Destination,[string]$Version)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
@@ -71,24 +71,12 @@ try{
   if($actual.RunId -cne $probeId -or $actual.Pid -ne $process.Id -or $actual.ExecutableSha256 -ne $hash -or $actual.SessionProtocol -ne 2 -or $actual.OutputLockProtocol -cne 'windows-file-id-v2' -or $actual.State -ne 'completed' -or $actual.ExitCode -ne 0 -or $actual.Executable -ine $stageExe -or $actual.Build -cne $informational){throw "Packaged runtime identity/protocol/provenance mismatch. No manifest was emitted. Inspect $probe"}
  }finally{$process.Dispose()}
  @{SchemaVersion=1;SessionProtocol=2;OutputLockProtocol='windows-file-id-v2';ExecutableSha256=$hash}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $stage 'session-capabilities.json') -Encoding utf8
- [ordered]@{Version=$Version;InformationalVersion=$informational;ExecutableSha256=$hash;Source=$source;Sdk=(& dotnet --version);BuiltUtc=[DateTimeOffset]::UtcNow.ToString('O');StartupProbe=$actual;SingleFile=$true}|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $stage 'build-provenance.json') -Encoding utf8
+ [ordered]@{Version=$Version;InformationalVersion=$informational;ExecutableSha256=$hash;Source=$source;Sdk=(& dotnet --version);BuiltUtc=[DateTimeOffset]::UtcNow.ToString('O');StartupProbe=$actual;Files=@(Get-ChildItem -LiteralPath $stage -File|ForEach-Object {[ordered]@{Name=$_.Name;Sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}})}|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $stage 'build-provenance.json') -Encoding utf8
  . (Join-Path $PSScriptRoot 'session-capabilities.ps1')
  $null=Assert-SessionCapableBuild $stageExe
  if((Get-SourceIdentity).SourceSha256 -ne $source.SourceSha256){throw 'Source changed during release assembly; destination preserved.'}
  Assert-NoActiveBuild
- if(Test-Path -LiteralPath $exe){
-  $oldVer=(Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
-  $archive=[IO.Path]::GetFullPath((Join-Path $root "Releases\$oldVer"))
-  if(-not $archive.StartsWith([IO.Path]::GetFullPath((Join-Path $root 'Releases'))+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'Invalid release archive path.'}
-  New-Item -ItemType Directory -Force -Path $archive | Out-Null
-  foreach($name in @('XEnchantmentPatcher.exe','XEnchantmentPatcher.pdb')){
-   $old=Join-Path $Destination $name;$saved=Join-Path $archive $name
-   if(Test-Path -LiteralPath $old){
-    if(Test-Path -LiteralPath $saved){if((Get-FileHash -LiteralPath $old).Hash -ne (Get-FileHash -LiteralPath $saved).Hash){throw "Archive differs: $saved"}}
-    else{Copy-Item -LiteralPath $old -Destination $saved}
-   }
-  }
- }
+ if(Test-Path -LiteralPath $exe){Get-ChildItem -LiteralPath $Destination -File -Filter *.dll|Where-Object {-not(Test-Path -LiteralPath (Join-Path $stage $_.Name))}|Remove-Item}
  Get-ChildItem -LiteralPath $stage | ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force}
  $null=Assert-SessionCapableBuild $exe
  "Published $Version -> $Destination"

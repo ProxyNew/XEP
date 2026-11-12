@@ -30,7 +30,7 @@
             <TextBlock Text="Profile" VerticalAlignment="Center" />
             <TextBox x:Name="ProfileSelector" Grid.Column="1" Text="{Binding ProfileName, Mode=OneWay}" IsReadOnly="True" AutomationProperties.Name="Current profile" ToolTip="The active saved set of patching choices. Data and Output folders are shared by all profiles." />
             <StackPanel Grid.Column="2" Orientation="Horizontal">
-                <Button x:Name="SelectProfileButton" Content="Browse.." Click="BrowseProfiles" Margin="10,0,0,0" ToolTip="Load another saved set of patching choices and rescan. Data and Output folders stay shared." />
+                <Button x:Name="SelectProfileButton" Content="Browse.." Click="BrowseProfiles" Margin="10,0,0,0" ToolTip="Load another saved set of patching choices. Data and Output folders stay shared." />
                 <Button x:Name="NewProfileButton" Content="New…" Tag="New" Click="ManageProfile" Margin="8,0,0,0" ToolTip="Create and switch to a profile with application defaults. Data and Output folders stay shared." />
                 <Button x:Name="DuplicateProfileButton" Content="Duplicate…" Tag="Duplicate" Click="ManageProfile" Margin="8,0,0,0" ToolTip="Copy this profile's patching choices into a new profile without generation history, then switch to it. Data and Output folders stay shared." />
             </StackPanel>
@@ -91,9 +91,6 @@
                     <Setter Property="Visibility" Value="Collapsed" />
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding IsBusyVisual}" Value="True">
-                            <Setter Property="Visibility" Value="Visible" />
-                        </DataTrigger>
-                        <DataTrigger Binding="{Binding IsRescanning}" Value="True">
                             <Setter Property="Visibility" Value="Visible" />
                         </DataTrigger>
                     </Style.Triggers>

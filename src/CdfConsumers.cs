@@ -11,7 +11,7 @@ public static partial class PatcherEngine
 {
     // Native inventory effects are consumers of existing records, not entries in
     // those lists or fabricated CONT overrides. Native CDF still applies them.
-    private sealed record CdfListUse(FormKey Payload, FormKey Consumer, string Predicate, uint Count, string Provenance,
+    internal sealed record CdfListUse(FormKey Payload, FormKey Consumer, string Predicate, uint Count, string Provenance,
         bool Direct = false, bool Reference = false, string Conditions = "{}", FormKey Base = default,
         string EstablishedPredicate = "")
     {
@@ -27,7 +27,7 @@ public static partial class PatcherEngine
         public string BroaderInventoryPredicate { get; init; } = "";
         public string ChangeId { get; init; } = "";
     }
-    private sealed partial record CdfConsumers(IReadOnlyList<CdfListUse> Uses, IReadOnlyList<string> Notes)
+    internal sealed partial record CdfConsumers(IReadOnlyList<CdfListUse> Uses, IReadOnlyList<string> Notes)
     {
         // Native CDF re-evaluates these at each initialization/reset, and every output
         // for a CDF recipient is CDF-delivered with the authored predicate copied, so

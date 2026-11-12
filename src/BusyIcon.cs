@@ -64,7 +64,7 @@ public sealed class BusyIcon : System.Windows.Controls.Image
         return result;
     }
 
-    private static BitmapSource Render(int width, int height, BitmapSource? background, Rect? clear, BitmapSource? frame, Rect area)
+    internal static BitmapSource Render(int width, int height, BitmapSource? background, Rect? clear, BitmapSource? frame, Rect area)
     {
         var visual = new DrawingVisual();
         using (var context = visual.RenderOpen())
@@ -90,7 +90,7 @@ public sealed class BusyIcon : System.Windows.Controls.Image
         catch (NotSupportedException) { return null; }
     }
 
-    private void Start()
+    internal void Start()
     {
         var frames = SharedFrames.Value;
         if (frames.Length == 0) return;
@@ -99,7 +99,7 @@ public sealed class BusyIcon : System.Windows.Controls.Image
         if (IsVisible) _timer.Start();
     }
 
-    private void Advance()
+    internal void Advance()
     {
         var frames = SharedFrames.Value;
         if (frames.Length == 0) return;

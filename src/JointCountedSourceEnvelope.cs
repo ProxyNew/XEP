@@ -10,7 +10,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record JointCountedSourceEnvelope(
+    internal sealed record JointCountedSourceEnvelope(
         IReadOnlySet<FormKey> Sources, FormKey KernelRoot,
         IReadOnlyDictionary<FormKey, ILeveledItemGetter> Kernel,
         IReadOnlySet<FormKey> OtherItems, IReadOnlyList<SourceRouteStep> OuterSteps,
@@ -22,7 +22,7 @@ public static partial class PatcherEngine
     // A source-specific kernel may have collapsed the OTHER selected source's
     // subtree. Rebuild once from author evidence for the UNION, never splice the
     // independently projected lists or independently re-roll their shared gates.
-    private static string? TryJointCountedSourceEnvelope(IReadOnlyList<CountedSourceEnvelope> envelopes,
+    internal static string? TryJointCountedSourceEnvelope(IReadOnlyList<CountedSourceEnvelope> envelopes,
         Catalog catalog, out JointCountedSourceEnvelope? proof)
     {
         proof = null;
@@ -56,7 +56,6 @@ public static partial class PatcherEngine
             .Where(g => !g.Last().IsDeleted).Select(g => g.Key).ToHashSet();
         var staticItems = catalog.StaticSourceItems ??= catalog.Mods.SelectMany(m => m.EnumerateMajorRecords<IItemGetter>())
             .GroupBy(i => i.FormKey).Where(g => !g.Last().IsDeleted).Select(g => g.Key).ToHashSet();
-        var outer = new List<SourceRouteStep>();
         var expectedChild = first.KernelRoot;
         var outerSeen = new HashSet<FormKey>();
         foreach (var step in first.OuterSteps)
@@ -75,13 +74,11 @@ public static partial class PatcherEngine
                 || step.Original.Entries[step.EntryIndex].Data is not { Count: > 0 } data
                 || data.Reference.FormKey != step.Child || data.Count != step.Count || data.Level != step.Level || data.Level < 0)
                 return $"joint source outer {step.List}: invalid exact entry, count, level or extra-data";
-            outer.Add(step with { Original = step.Original.DeepCopy() });
             expectedChild = step.List;
         }
 
         var kernel = new Dictionary<FormKey, ILeveledItemGetter>();
         var other = new HashSet<FormKey>();
-        var frozen = new Dictionary<FormKey, ILeveledItemGetter>();
         var complete = new Dictionary<FormKey, bool>();
         var active = new HashSet<FormKey>();
         var seenSources = new HashSet<FormKey>();
@@ -100,20 +97,19 @@ public static partial class PatcherEngine
                 other.Add(key); return complete[key] = false;
             }
             if (!active.Add(key)) { failure = $"joint kernel contains cycle at {key}"; return false; }
-            var snapshot = original.DeepCopy(); frozen[key] = snapshot;
-            if ((snapshot.Entries?.Count ?? 0) > 255)
+            if ((original.Entries?.Count ?? 0) > 255)
             { failure = $"joint kernel {key} exceeds native 255-entry capacity"; return false; }
-            if (!snapshot.Global.IsNull && !globals.Contains(snapshot.Global.FormKey))
+            if (!original.Global.IsNull && !globals.Contains(original.Global.FormKey))
             { failure = $"joint kernel {key} contains unresolved chance global"; return false; }
             var bearing = false;
-            foreach (var entry in snapshot.Entries ?? [])
+            foreach (var entry in original.Entries ?? [])
             {
                 if (entry.Data is not { Count: > 0 } d || d.Level < 0 || entry.ExtraData is not null)
                 { failure = $"joint kernel {key} contains invalid count, level, missing data or entry extra-data"; return false; }
                 bearing |= Visit(d.Reference.FormKey, depth + 1);
                 if (failure is not null) return false;
             }
-            var nodeProblem = StaticSourceNodeProblem(snapshot, catalog, allowFixedNone: true, allowSpecialLoot: !bearing);
+            var nodeProblem = StaticSourceNodeProblem(original, catalog, allowFixedNone: true, allowSpecialLoot: !bearing);
             if (nodeProblem is not null)
             {
                 if (bearing || !SourceListHasRuntimeMutation(key, catalog))
@@ -128,7 +124,7 @@ public static partial class PatcherEngine
             {
                 if (outerSeen.Contains(key)) { failure = $"joint kernel reconverges into outer occurrence {key}"; return false; }
                 if (kernel.Count >= 1024) { failure = "joint union-bearing kernel exceeds 1024 nodes"; return false; }
-                kernel[key] = snapshot;
+                kernel[key] = original;
             }
             else other.Add(key); // a validated disjoint subtree emits no new family
             return complete[key] = bearing;
@@ -145,11 +141,11 @@ public static partial class PatcherEngine
         }
         var signature = "joint-counted-union-v1|" + first.SamplingIdentity
             + "|sources:" + string.Join(';', sources.Order())
-            + "|author:" + string.Join('|', frozen.OrderBy(p => p.Key).Select(p => SourceNodeIdentity(p.Value)))
+            + "|author:" + string.Join('|', complete.Keys.Where(author.ContainsKey).Order().Select(k => SourceNodeIdentity(author[k])))
             + "|runtime-disjoint:" + string.Join('|', runtimeDisjointEvidence.Order(StringComparer.Ordinal));
         var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(signature)));
         proof = new(sources, first.KernelRoot, new ReadOnlyDictionary<FormKey, ILeveledItemGetter>(kernel), other,
-            outer.AsReadOnly(), new ReadOnlyDictionary<FormKey, short>(minima), first.SamplingIdentity, first.ProjectionScope,
+            first.OuterSteps, new ReadOnlyDictionary<FormKey, short>(minima), first.SamplingIdentity, first.ProjectionScope,
             identity, Array.AsReadOnly(envelopes.SelectMany(e => e.OmittedSourceBranches).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()))
         { RuntimeDisjointEvidence = runtimeDisjointEvidence.Order(StringComparer.Ordinal).ToArray() };
         return null;
@@ -158,7 +154,7 @@ public static partial class PatcherEngine
     // Returns a planning root only. The caller reserves the authoring event and
     // attaches this root ONCE at a compatible destination. Calling it separately
     // for each source would recreate the joint-quantity bug.
-    private static FormKey MaterializeJointCountedSourceEnvelope(IReadOnlyDictionary<FormKey, FormKey> families,
+    internal static FormKey MaterializeJointCountedSourceEnvelope(IReadOnlyDictionary<FormKey, FormKey> families,
         JointCountedSourceEnvelope proof, Catalog catalog)
     {
         if (families.Count == 0 || families.Keys.Any(s => !proof.Sources.Contains(s)))

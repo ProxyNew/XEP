@@ -7,8 +7,8 @@ namespace XEnchantmentPatcher;
 // fast path only rejects ASCII bodies that cannot contain the literal name.
 internal sealed class ScriptCallMatcher
 {
-    private sealed record Rule(Regex Pattern, bool AsciiPrefilter);
-    private readonly Dictionary<(string Name, string Culture), Rule> rules = new();
+    internal sealed record Rule(Regex Pattern, bool AsciiPrefilter);
+    internal readonly Dictionary<(string Name, string Culture), Rule> rules = new();
     private readonly Dictionary<string, bool> asciiBodies = new(ReferenceEqualityComparer.Instance);
 
     public IEnumerable<Match> Matches(string name, string body)

@@ -10,11 +10,11 @@ public static partial class PatcherEngine
 {
     // Candidate identities, not binding/execution/availability certificates.
     // Runtime observation validates the actual receiver and payload contents.
-    private sealed record MirrorSite(FormKey Receiver, FormKey Payload, short Level, short Count, string Evidence);
+    internal sealed record MirrorSite(FormKey Receiver, FormKey Payload, short Level, short Count, string Evidence);
     // A list LLOS withholds (Problems) keeps plugin contents that LLOS may still change at startup, so Script distribution
     // reads no evidence from its entries: no source membership, level window, presence or shape.
     private static bool LlosWithheld(FormKey list, Catalog catalog) => catalog.LlosLists?.Problems.ContainsKey(list) == true;
-    private static bool MirrorPayloadContains(MirrorSite site, FormKey source, Catalog catalog)
+    internal static bool MirrorPayloadContains(MirrorSite site, FormKey source, Catalog catalog)
     {
         if (catalog.MirrorPayloadMembership.TryGetValue((site.Payload, source), out var membership)) return membership;
         var graph = SpecializedGraph(catalog); var seen = new HashSet<FormKey>();
@@ -86,7 +86,7 @@ public static partial class PatcherEngine
         return result;
     }
 
-    private static string? MirrorShapeProblem(MirrorSite site, Catalog catalog)
+    internal static string? MirrorShapeProblem(MirrorSite site, Catalog catalog)
     {
         var graph = SpecializedGraph(catalog);
         if (!graph.Lists.TryGetValue(site.Receiver, out var receiver) || receiver.IsDeleted) return "receiver is not a winning LVLI";

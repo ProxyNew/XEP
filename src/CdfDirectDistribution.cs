@@ -7,9 +7,9 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record CdfDirectRoute(CdfListUse Source, EnchantedTemplate Template, short Level);
-    private sealed record CdfOutputRoot(FormKey Root, CdfListUse Source);
-    private sealed partial class Catalog
+    internal sealed record CdfDirectRoute(CdfListUse Source, EnchantedTemplate Template, short Level);
+    internal sealed record CdfOutputRoot(FormKey Root, CdfListUse Source);
+    internal sealed partial class Catalog
     {
         public Dictionary<FormKey, CdfDirectRoute[]> CdfDirectRoutes { get; } = [];
         public List<CdfOutputRoot> CdfOutputRoots { get; } = [];
@@ -126,7 +126,7 @@ public static partial class PatcherEngine
                 var admitted = new List<(CdfDirectRoute Route, string Variant, IMajorRecordGetter? Equivalent)>();
                 foreach (var group in context.GroupBy(r => VariantIdentity(r.Template.Item, r.Template.Enchantment, catalog)))
                 {
-                    var route = group.OrderBy(r => profile.EnchantmentProviderPlugins.IndexOf(r.Template.Enchantment.ModKey.FileName.String))
+                    var route = group.OrderBy(r => ProviderRank(profile, r.Template.Enchantment.ModKey))
                         .ThenBy(r => r.Template.Item.FormKey).First();
                     var template = route.Template;
                     if (!CdfOutputAvailable(key, template, [CdfUse(context.Key)], catalog, group.Key)) continue;

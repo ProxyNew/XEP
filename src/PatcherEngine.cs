@@ -19,22 +19,22 @@ public static partial class PatcherEngine
 {
     public const string OutputFileName = "XEnchantmentPatcher.esp";
 
-    private sealed record EquipmentClass(string Signature, string Material, string Type, ArmorType? ArmorType)
+    internal sealed record EquipmentClass(string Signature, string Material, string Type, ArmorType? ArmorType)
     {
         public override string ToString() => Material == "Jewelry" ? $"Jewelry {Type}"
             : ArmorType is null ? $"{Material} {Type}" : $"{Material} {ArmorType} {Type}";
     }
 
-    private sealed record EquipmentShape(string Signature, string Type, ArmorType? ArmorType, string[] Materials)
+    internal sealed record EquipmentShape(string Signature, string Type, ArmorType? ArmorType, string[] Materials)
     {
         public string Group => Signature == "WEAP" ? $"WEAP|{(Type is "Greatsword" or "Battleaxe" or "Warhammer" ? "2H" : "1H")}"
             : IsJewelryType(Type) ? $"ARMO|Jewelry|{Type}" : $"ARMO|{ArmorType}";
         public override string ToString() => $"{string.Join('/', Materials)} {ArmorType} {Type}".Replace("  ", " ").Trim();
     }
 
-    private sealed record ParentEntry(FormKey List, short Level, short Count);
+    internal sealed record ParentEntry(FormKey List, short Level, short Count);
 
-    private sealed class EnchantedTemplate
+    internal sealed class EnchantedTemplate
     {
         public required IMajorRecordGetter Item { get; init; }
         public required IMajorRecordGetter BaseItem { get; init; }
@@ -44,7 +44,7 @@ public static partial class PatcherEngine
         public required List<ParentEntry> Parents { get; init; }
     }
 
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
         public Dictionary<IMajorRecordGetter, EquipmentFacts> EquipmentFacts { get; } = new(ReferenceEqualityComparer.Instance);
         public Dictionary<ModKey, string> PluginNames { get; } = [];
@@ -74,20 +74,18 @@ public static partial class PatcherEngine
         public Dictionary<string, (string? Text, string Evidence)> RuntimeBaseScripts { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> RuntimeBaseScriptDiagnosticEvidence { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, ScriptInstance> RuntimeScriptInstances { get; } = new(StringComparer.Ordinal);
-        public List<RuntimeBindingCheck> RuntimeBindingChecks { get; } = [];
-        public List<RuntimePayloadExpressionDiagnostic> RuntimePayloadExpressions { get; } = [];
-        public List<RuntimeLocalArrayIdentity> RuntimeLocalArrayIdentities { get; } = [];
-        public Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>? RuntimeWinningRecords { get; set; }
+        // The load-order winner index: set where the catalog is created and shared by every copy.
+        public required Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> RuntimeWinningRecords { get; set; }
         public Dictionary<FormKey, string[]>? RuntimeUnclosedHolderIndex { get; set; }
         public Dictionary<FormKey, RuntimePublicHolder[]>? RuntimeNonQuestHolderIndex { get; set; }
         public Func<string, RuntimeHolderAsset>? RuntimeHolderAssetResolver { get; set; }
         public Dictionary<string, RuntimeHolderAsset> RuntimeHolderAssets { get; } = new(StringComparer.OrdinalIgnoreCase);
-        public Dictionary<string, RuntimeHolderAttachment> RuntimeHolderAttachments { get; } = new(StringComparer.Ordinal);
-        public List<RuntimeHolderViewCheck> RuntimeHolderViewChecks { get; } = [];
         public Dictionary<FormKey, RuntimeHolderViewCheck> RuntimeHolderViewResults { get; } = [];
         // Empty-frame, non-slice holder verdicts by list root. Each records the mutable
         // inputs it read and is reused only while they match, including in later passes.
         public Dictionary<FormKey, RuntimeListRootHolderVerdict> RuntimeListRootHolderVerdicts { get; } = [];
+        // Property-frame verdicts by slice source and frame identities; this catalog's only.
+        public Dictionary<string, RuntimeListRootHolderVerdict> RuntimeFrameHolderVerdicts { get; } = [];
         public Dictionary<FormKey, FormKey[]>? RuntimeFormListHolderParents { get; set; }
         public Dictionary<FormKey, RuntimeListCarrier[]>? RuntimeAuthoredListCarriers { get; set; }
         public Dictionary<FormKey, RuntimeListCarrier[]>? RuntimePossibleListCarriers { get; set; }
@@ -129,7 +127,6 @@ public static partial class PatcherEngine
         // Null until a selection is known; then only each source mod counts.
         public HashSet<FormKey>? PatchedItems { get; set; }
         public HashSet<ModKey>? PatchedMods { get; set; }
-        public HashSet<RuntimeHolderCheck> RuntimeHolderChecks { get; } = [];
         public ConcurrentDictionary<string, bool> RuntimeNativeContracts { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> RuntimeNativeContractProblems { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<(FormKey Owner, string Property, bool Receiver), string> RuntimeFrameEvidence { get; } = [];
@@ -182,9 +179,6 @@ public static partial class PatcherEngine
         public HashSet<FormKey>? LootConsumers { get; set; }
         public bool AvailabilityInitialized { get; set; }
         public SpecializedEvidence? SpecializedEvidence { get; set; }
-        // Prefetched review assessments kept across selection changes of one load-order
-        // analysis and material/origin set (see ReviewAssessmentCache). Shared by forks.
-        public ReviewAssessmentCache? AssessmentReuse { get; set; }
         public Dictionary<(FormKey Payload, FormKey Source), bool> MirrorPayloadMembership { get; } = [];
         // Enchanted-access evidence, rebuilt by every ApplySpecializedChoices call. Verdicts and
         // destinations are frozen there so planning pools never become evidence.
@@ -246,10 +240,6 @@ public static partial class PatcherEngine
         // Only frozen catalog-owned collections participate. Transient filtered
         // inputs may change and must use the uncached ranking path.
         public Dictionary<List<EnchantedTemplate>, Dictionary<(int Value, string? Subtype, bool Jewelry), EnchantedTemplate[]>> ExactTemplateSelections { get; } = new(ReferenceEqualityComparer.Instance);
-        public Dictionary<(FormKey, string), bool> DestinationCache { get; } = [];
-        public Dictionary<(FormKey, FormKey), bool> NestedItemCache { get; } = [];
-        public Dictionary<(FormKey, FormKey), bool> NestedListCache { get; } = [];
-        public Dictionary<FormKey, HashSet<string>?> DestinationSubtypes { get; } = [];
         public Dictionary<(FormKey List, FormKey Source, FormKey Enchantment), bool> ExistingVariantCache { get; } = [];
         public Dictionary<FormKey, FallbackNode> Fallbacks { get; } = [];
         public PlanningAdditions<FallbackEdge> FallbackEdges { get; } = [];
@@ -270,7 +260,7 @@ public static partial class PatcherEngine
         public bool BroadUnmatchedDistribution { get; init; }
     }
 
-    private sealed record VariantPlan(CandidateItem Candidate, IMajorRecordGetter Source, EnchantedTemplate Template,
+    internal sealed record VariantPlan(CandidateItem Candidate, IMajorRecordGetter Source, EnchantedTemplate Template,
         IReadOnlyList<ParentEntry> Parents, IMajorRecordGetter? Reused = null, string? PlacementReason = null,
         IReadOnlyList<int>? DiagnosticIds = null, bool PreserveParentMultiplicity = false,
         IReadOnlyDictionary<FormKey, EnchantedTemplate>? ParentTemplates = null)
@@ -290,13 +280,13 @@ public static partial class PatcherEngine
         return catalog.RouteDiagnostics.Where(x => used.Contains(x.Id)).ToList();
     }
 
-    private sealed record PlanBundle(List<CandidateItem> Candidates, PlanningAdditions<VariantPlan> Plans, int SourceCount);
+    internal sealed record PlanBundle(List<CandidateItem> Candidates, PlanningAdditions<VariantPlan> Plans, int SourceCount);
 
     // Distribution notes are read through Distinct and Contains, so a repeated note
     // adds nothing: it is dropped on insertion and the first occurrence keeps its place.
     // The list base keeps every reader, including fixtures that cast to List<string>;
     // the interface is re-implemented so evidence sinks deduplicate as well.
-    private sealed class NoteList : DiagnosticMessages, ICollection<string>
+    internal sealed class NoteList : DiagnosticMessages, ICollection<string>
     {
         private readonly HashSet<string> present;
         public NoteList() { present = new(StringComparer.Ordinal); }
@@ -371,7 +361,7 @@ public static partial class PatcherEngine
         return DiscoverProvidersLoaded(game.Mods, settings.CurrentProfile);
     }
 
-    private static List<EnchantmentProviderOption> DiscoverProvidersLoaded(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile)
+    internal static List<EnchantmentProviderOption> DiscoverProvidersLoaded(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile)
     {
         var armors = mods.SelectMany(x => x.Armors).GroupBy(x => x.FormKey).ToDictionary(x => x.Key, x => x.Last());
         var weapons = mods.SelectMany(x => x.Weapons).GroupBy(x => x.FormKey).ToDictionary(x => x.Key, x => x.Last());
@@ -392,22 +382,17 @@ public static partial class PatcherEngine
                 x.Select(y => y.Enchantment).Distinct().Count(), x.Count()))
             .OrderByDescending(x => activePlugins[ModKey.FromFileName(x.Plugin)])
             .ToList();
-        if (profile.UseLoadOrderProviderDefaults is not false)
+        if (profile.UseLoadOrderProviderDefaults)
         {
-            profile.UseLoadOrderProviderDefaults = true;
             profile.EnchantmentProviderPlugins = providers.Select(x => x.Plugin).ToList();
             profile.EnchantmentProviderOrder = profile.EnchantmentProviderPlugins.ToList();
-            profile.ProviderOrderMigrated = true;
         }
         return providers;
     }
 
-    public static ScanResult Scan(AppSettings settings)
-    {
-        var result = Scan(settings, out var snapshot);
-        snapshot.Dispose();
-        return result;
-    }
+    // An origin plugin's place in the provider order, case-insensitive; unknown plugins rank last.
+    private static int ProviderRank(ProfileSettings profile, ModKey plugin)
+        => profile.EnchantmentProviderPlugins.FindIndex(p => p.Equals(plugin.FileName.String, StringComparison.OrdinalIgnoreCase)) is var i and >= 0 ? i : int.MaxValue;
 
     // The caller owns the returned snapshot and disposes it when the session ends
     // or a new Scan replaces it.
@@ -450,23 +435,18 @@ public static partial class PatcherEngine
         var items = pass.Candidates;
         var rows = items.GroupBy(x => x.Plugin, StringComparer.OrdinalIgnoreCase)
             .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(g =>
+            .Select(g => new PluginDecision
             {
-                var prior = profile.Policies.GetValueOrDefault(g.Key, PatchPolicy.Review);
-                prior = SettingsStore.NormalizePolicy(prior);
-                return new PluginDecision
-                {
-                    Plugin = g.Key,
-                    EligibleItems = g.Count(x => x.Eligible),
-                    DistributedItems = g.Count(x => x.Eligible && x.AlreadyDistributed),
-                    ScriptCandidateItems = g.Count(x => x.Eligible && (x.HasScriptDistributionSource
-                        || x.SpecializedMode == SpecializedLootMode.ScriptDistribution || x.RecommendedSpecializedMode == SpecializedLootMode.ScriptDistribution)),
-                    ExcludedItems = g.Count(x => !x.Eligible),
-                    Examples = string.Join(", ", g.Where(x => x.Eligible).Take(4).Select(x => x.Name)),
-                    Policy = prior,
-                    AuthorPolicy = author?.Policies.GetValueOrDefault(g.Key)?.Value,
-                    AuthorNote = author?.Policies.GetValueOrDefault(g.Key)?.Describe("patch policy") ?? ""
-                };
+                Plugin = g.Key,
+                EligibleItems = g.Count(x => x.Eligible),
+                DistributedItems = g.Count(x => x.Eligible && x.AlreadyDistributed),
+                ScriptCandidateItems = g.Count(x => x.Eligible && (x.HasScriptDistributionSource
+                    || x.SpecializedMode == SpecializedLootMode.ScriptDistribution || x.RecommendedSpecializedMode == SpecializedLootMode.ScriptDistribution)),
+                ExcludedItems = g.Count(x => !x.Eligible),
+                Examples = string.Join(", ", g.Where(x => x.Eligible).Take(4).Select(x => x.Name)),
+                Policy = profile.Policies.GetValueOrDefault(g.Key, PatchPolicy.Review),
+                AuthorPolicy = author?.Policies.GetValueOrDefault(g.Key)?.Value,
+                AuthorNote = author?.Policies.GetValueOrDefault(g.Key)?.Describe("patch policy") ?? ""
             }).ToList();
         ScanProgress.Enter(ScanStage.Selection);
         EnsureSpecializedChoices(items, catalog, profile);
@@ -518,14 +498,6 @@ public static partial class PatcherEngine
             .Concat(catalog.LlosLists?.Notes.Information ?? [])
             .Concat(catalog.DistributionNotes.Information);
 
-    public static GenerationPreview Preview(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies)
-    {
-        using var session = PhaseTiming.Begin("preview");
-        var requestedOutput = RequestedOutput(settings);
-        using var game = LoadOrderProvider.Load(settings, Path.GetFileName(requestedOutput));
-        return PreviewAnalysis(settings, policies, AnalyzeLoaded(settings, game.Mods));
-    }
-
     // The snapshot retains these plans for a following Generate that reuses them.
     public static GenerationPreview Preview(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies, ScanSnapshot snapshot)
     {
@@ -535,7 +507,7 @@ public static partial class PatcherEngine
             PreviewAnalysis(effective, author?.EffectivePolicies(policies) ?? policies, analysis.Current(effective)));
     }
 
-    private static GenerationPreview PreviewAnalysis(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies,
+    internal static GenerationPreview PreviewAnalysis(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies,
         ScanAnalysis analysis)
     {
         var requestedOutput = RequestedOutput(settings);
@@ -544,7 +516,7 @@ public static partial class PatcherEngine
         var candidates = pass.Candidates;
         var protectedTargets = RevertSwitchGroups(catalog);
         OperationProgress.Stage("Projecting leveled-list changes…");
-        var projection = EffectiveStaticEntries.Project(catalog, bundle.Plans);
+        var projection = ProjectStaticEntries(catalog, bundle.Plans);
         OperationProgress.Stage("Checking generated lists…");
         var merged = IdenticalGeneratedLists(catalog, projection);
         var collapse = CollapseGeneratedLists(catalog, projection, merged);
@@ -562,7 +534,8 @@ public static partial class PatcherEngine
         var patchCount = layout.PatchCount(newRecords);
         var outputs = OutputPaths(requestedOutput, patchCount);
         catalog.NativeLists?.ValidateOutputPlugins(outputs);
-        var fingerprint = Fingerprint(bundle.Plans, outputs, settings.CurrentProfile, catalog);
+        var fingerprintBody = FingerprintBody(bundle.Plans, catalog);
+        var fingerprint = Fingerprint(fingerprintBody, outputs, settings.CurrentProfile);
         analysis.RetainDerived(new PreviewDerived(projection, merged, impacts, fingerprint, settings.CurrentProfile.FullOutputPlugin));
         var previousFingerprint = PreviousFingerprint(settings, requestedOutput);
         var alternateFullOutput = !settings.CurrentProfile.FullOutputPlugin;
@@ -574,8 +547,8 @@ public static partial class PatcherEngine
         {
             var alternateLayout = alternateFullOutput ? OutputLayout.Full : OutputLayout.Light;
             var alternateOutputs = OutputPaths(requestedOutput, alternateLayout.PatchCount(newRecords));
-            alternateIdentityChanged = priorFingerprint != Fingerprint(bundle.Plans, alternateOutputs,
-                settings.CurrentProfile, catalog, alternateFullOutput);
+            alternateIdentityChanged = priorFingerprint != Fingerprint(fingerprintBody, alternateOutputs,
+                settings.CurrentProfile, alternateFullOutput);
         }
         OperationProgress.Stage("Building preview report…");
         var warnings = new List<string>();
@@ -585,8 +558,6 @@ public static partial class PatcherEngine
         if (undistributed > 0) warnings.Add(settings.CurrentProfile.KeepUndistributedVariants
             ? $"{undistributed} variant combinations have no distribution. Newly generated variants are retained as unreachable equipment records, remain absent from loot, and keep their rejection evidence in the report."
             : $"{undistributed} variant combinations have no distribution; their rejection evidence is retained in the report, but new unreachable equipment records are not written.");
-        if (settings.CurrentProfile.StrictSubtypeMatching)
-            warnings.Add("Strict subtype classification is enabled. Source-item distribution determines context; unknown subtypes remain undistributed.");
         if (settings.CurrentProfile.BroadUnmatchedDistribution)
             warnings.Add("Broader unmatched distribution is enabled. New source-gated branches are added only to proven enchanted-only structures and can change category selection shares.");
         if (settings.CurrentProfile.ResolveLeveledListConflicts)
@@ -615,7 +586,6 @@ public static partial class PatcherEngine
             Llos = catalog.Llos,
             Cid = catalog.Cid,
             Spid = catalog.Spid,
-            StrictSubtypeMatching = settings.CurrentProfile.StrictSubtypeMatching,
             BroadUnmatchedDistribution = settings.CurrentProfile.BroadUnmatchedDistribution,
             ResolveLeveledListConflicts = settings.CurrentProfile.ResolveLeveledListConflicts,
             KeepUndistributedVariants = settings.CurrentProfile.KeepUndistributedVariants,
@@ -648,56 +618,38 @@ public static partial class PatcherEngine
                 string.Join("; ", g.Select(x => x.Template.BaseItem).DistinctBy(x => x.FormKey)
                     .OrderBy(x => x.FormKey).Select(x => $"{DisplayName(x)} [{x.FormKey}]")),
                 // Identical and collapsed generated lists: name the written lists that hold the entry.
-                g.Count(), g.SelectMany(x => x.Parents).SelectMany(x => collapse.Holders(x.List, merged)).Select(x => $"{catalog.Lists[x].EditorID} [{x}]").Distinct().Order().ToList())).ToList(),
+                // Each parent list once per item; keys that differ only in case stay apart, as their texts did.
+                g.Count(), g.SelectMany(x => x.Parents).Select(x => x.List).DistinctBy(x => (x, x.ModKey.Name))
+                    .SelectMany(x => collapse.Holders(x, merged)).Select(x => $"{catalog.Lists[x].EditorID} [{x}]").Distinct().Order().ToList())).ToList(),
             Warnings = warnings
         };
     }
 
-    private static PlanBundle BuildPlans(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies,
+    internal static PlanBundle BuildPlans(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies,
         Catalog catalog, List<CandidateItem> candidates, Action<string>? progress = null)
         => BuildSourcePlans(settings, policies, catalog, candidates, progress);
 
 
-    private static bool IsSelected(CandidateItem item, IReadOnlyDictionary<string, PatchPolicy> policies, ProfileSettings profile)
+    internal static bool IsSelected(CandidateItem item, IReadOnlyDictionary<string, PatchPolicy> policies, ProfileSettings profile) =>
+        Selection(item, policies.GetValueOrDefault(item.Plugin, PatchPolicy.Exclude),
+            profile.ItemOverrides.TryGetValue(item.FormKey, out var manual) ? manual : null);
+
+    // The one selection rule, shared with the main window. Only an eligible item that is in
+    // loot lists or follows script distribution can be selected. A choice (the user's saved
+    // override, or an author include the effective profile carries as one) decides it;
+    // without one, Existing Distribution selects it. The main window saves the user's
+    // choice only where it differs from this answer without it.
+    internal static bool Selection(CandidateItem item, PatchPolicy policy, bool? choice = null)
     {
         var scriptFollowing = item.SpecializedMode == SpecializedLootMode.ScriptDistribution;
         if (!item.Eligible || !item.AlreadyDistributed && !scriptFollowing) return false;
-        if (profile.ItemOverrides.TryGetValue(item.FormKey, out var manual)) return manual;
-        return SettingsStore.NormalizePolicy(policies.GetValueOrDefault(item.Plugin, PatchPolicy.Exclude)) switch
-        {
-            PatchPolicy.ExistingDistribution => item.AlreadyDistributed || scriptFollowing,
-            _ => false
-        };
+        return choice ?? policy == PatchPolicy.ExistingDistribution;
     }
 
-    // Enchantment compatibility is checked before this independent placement check.
-    // All equipment reachable from a destination must have the same specific family.
-    // Unknown leaves and cycles fail closed instead of borrowing a faction's loot pool.
-    private static bool DestinationMatches(FormKey listKey, string family, Catalog catalog)
-    {
-        if (catalog.DestinationCache.TryGetValue((listKey, family), out var cached)) return cached;
-        var active = new HashSet<FormKey>();
-        bool Visit(FormKey key)
-        {
-            if (!active.Add(key)) return false;
-            try
-            {
-                if (catalog.Lists.TryGetValue(key, out var list))
-                    return list.Entries is { Count: > 0 } && list.Entries.All(e => e.Data is { } data && Visit(data.Reference.FormKey));
-                IMajorRecordGetter? item = catalog.Weapons.GetValueOrDefault(key) ?? (IMajorRecordGetter?)catalog.Armors.GetValueOrDefault(key);
-                if (item is null) return false;
-                if (TryBase(item, out var baseKey)) return Visit(baseKey);
-                return CachedClass(item, catalog)?.Material.Equals(family, StringComparison.OrdinalIgnoreCase) == true;
-            }
-            finally { active.Remove(key); }
-        }
-        return catalog.DestinationCache[(listKey, family)] = Visit(listKey);
-    }
-
-    private static string? DistributionSubtype(IMajorRecordGetter item, Catalog catalog)
+    internal static string? DistributionSubtype(IMajorRecordGetter item, Catalog catalog)
         => Facts(item, catalog).Subtype;
 
-    private static string? ComputeDistributionSubtype(IMajorRecordGetter item, Catalog catalog)
+    internal static string? ComputeDistributionSubtype(IMajorRecordGetter item, Catalog catalog)
     {
         var visited = new HashSet<FormKey>();
         while (TryBase(item, out var baseKey))
@@ -766,80 +718,7 @@ public static partial class PatcherEngine
         return $"WEAP|{handedness}|{subtype}";
     }
 
-    private static bool DestinationSubtypeMatches(FormKey listKey, IMajorRecordGetter source, Catalog catalog)
-    {
-        var sourceType = DistributionSubtype(source, catalog);
-        if (sourceType is null) return false;
-        if (!catalog.DestinationSubtypes.TryGetValue(listKey, out var types))
-        {
-            var found = new HashSet<string>();
-            var active = new HashSet<FormKey>();
-            bool Visit(FormKey key)
-            {
-                if (!active.Add(key)) return false;
-                try
-                {
-                    if (catalog.Lists.TryGetValue(key, out var list))
-                        return list.Entries is { Count: > 0 } && list.Entries.All(e => e.Data is { } data && Visit(data.Reference.FormKey));
-                    var item = catalog.Weapons.GetValueOrDefault(key) ?? (IMajorRecordGetter?)catalog.Armors.GetValueOrDefault(key);
-                    var type = item is null ? null : DistributionSubtype(item, catalog);
-                    if (type is null) return false;
-                    found.Add(type);
-                    return true;
-                }
-                finally { active.Remove(key); }
-            }
-            types = Visit(listKey) ? found : null;
-            catalog.DestinationSubtypes[listKey] = types;
-        }
-        return types?.Contains(sourceType) == true;
-    }
-
-    // A direct occurrence and an occurrence reached through a child list give the
-    // same item more than one selection path. Keep only the deepest direct placement.
-    private static bool ContainsItemThroughSublist(FormKey listKey, FormKey itemKey, Catalog catalog)
-    {
-        if (catalog.NestedItemCache.TryGetValue((listKey, itemKey), out var cached)) return cached;
-        var active = new HashSet<FormKey>();
-        bool Contains(FormKey key)
-        {
-            if (key == itemKey) return true;
-            if (!catalog.Lists.TryGetValue(key, out var list) || !active.Add(key)) return false;
-            try
-            {
-                return (list.Entries ?? []).Any(entry => entry.Data is { } data && Contains(data.Reference.FormKey));
-            }
-            finally { active.Remove(key); }
-        }
-
-        var result = catalog.Lists.TryGetValue(listKey, out var parent) &&
-            (parent.Entries ?? []).Any(entry => entry.Data is { } data && catalog.Lists.ContainsKey(data.Reference.FormKey) && Contains(data.Reference.FormKey));
-        return catalog.NestedItemCache[(listKey, itemKey)] = result;
-    }
-
-    private static bool ContainsNestedList(FormKey parentKey, FormKey childKey, Catalog catalog)
-    {
-        if (catalog.NestedListCache.TryGetValue((parentKey, childKey), out var cached)) return cached;
-        var active = new HashSet<FormKey>();
-        bool Visit(FormKey key)
-        {
-            if (key == childKey) return true;
-            if (!catalog.Lists.TryGetValue(key, out var list) || !active.Add(key)) return false;
-            try
-            {
-                return (list.Entries ?? []).Any(entry => entry.Data is { } data &&
-                    catalog.Lists.ContainsKey(data.Reference.FormKey) && Visit(data.Reference.FormKey));
-            }
-            finally { active.Remove(key); }
-        }
-
-        var result = catalog.Lists.TryGetValue(parentKey, out var parent) &&
-            (parent.Entries ?? []).Any(entry => entry.Data is { } data &&
-                catalog.Lists.ContainsKey(data.Reference.FormKey) && Visit(data.Reference.FormKey));
-        return catalog.NestedListCache[(parentKey, childKey)] = result;
-    }
-
-    private static void ValidateRuntimeCapacity(StaticEntryProjection projection, Catalog catalog)
+    internal static void ValidateRuntimeCapacity(StaticEntryProjection projection, Catalog catalog)
     {
         var protectedTargets = RevertSwitchGroups(catalog);
         foreach (var group in catalog.RuntimePlacements.GroupBy(r => r.Target.List))
@@ -853,6 +732,20 @@ public static partial class PatcherEngine
             var slots = protectedTargets.ContainsKey(group.Key) ? 1 : group.Count();
             if (count + slots > 255)
                 throw new InvalidDataException($"Runtime insertion target {catalog.Lists[group.Key].EditorID} lacks capacity: {count} static entries plus {slots} planned positions exceeds 255. No output was installed.");
+        }
+    }
+
+    // The Preview/Generate boundary for route refusals. Planning withholds a refused placement; a refusal that still
+    // reaches the writer's projection aborts the operation, and only here gains the note that no output was installed.
+    internal static StaticEntryProjection ProjectStaticEntries(Catalog catalog, IEnumerable<VariantPlan> plans)
+    {
+        try { return EffectiveStaticEntries.Project(catalog, plans); }
+        catch (RouteRefusalException refusal)
+        {
+            var aborted = new InvalidDataException(refusal.Message + " No output was installed.");
+            // Keep the refusal's own throw site in the reported stack trace.
+            ExceptionDispatchInfo.SetRemoteStackTrace(aborted, refusal.StackTrace ?? "");
+            throw aborted;
         }
     }
 
@@ -886,23 +779,36 @@ public static partial class PatcherEngine
             foreach (var target in InheritedCopyTargets(edge.Parent.List, copies, catalog)) yield return project(edge.Parent, target);
     }
 
-    private static string Fingerprint(IEnumerable<VariantPlan> plans, IEnumerable<string> outputs, ProfileSettings profile, Catalog catalog, bool? fullOutputPlugin = null)
+    // The identity text after the output names and layout flag. Both layouts a
+    // preview compares share it, so it is built once.
+    private static StringBuilder FingerprintBody(IEnumerable<VariantPlan> plans, Catalog catalog)
     {
-        // One buffer: the identity text is large, and appending sections to an
-        // immutable string copied all of it once per section.
-        var providers = string.Join(",", profile.EnchantmentProviderPlugins);
+        // The plan lines write the first spelling of a key, as before; the other lines each key's own
+        // (FormKey equality ignores the case of the plugin name, its text keeps it).
         var keyText = new Dictionary<FormKey, string>();
         string K(FormKey key) => keyText.TryGetValue(key, out var known) ? known : keyText[key] = key.ToString();
+        var ownText = new Dictionary<(FormKey, string), string>();
+        string T(FormKey key) => ownText.TryGetValue((key, key.ModKey.Name), out var known) ? known : ownText[(key, key.ModKey.Name)] = key.ToString();
+        // One buffer, with the large sections written into it item by item: a string
+        // per item cost as much as the text.
         var text = new StringBuilder();
-        text.AppendJoin('\n', outputs.Select(Path.GetFileName)).Append($"\n{providers}|template-priority=v19-jewelry-coverage|strict={profile.StrictSubtypeMatching}|broad={profile.BroadUnmatchedDistribution}|resolve-lvli={profile.ResolveLeveledListConflicts}|keep-undistributed={profile.KeepUndistributedVariants}{((fullOutputPlugin ?? profile.FullOutputPlugin) ? "|full-output-plugin" : "")}\n")
-            .AppendJoin('\n', plans.Select(x => $"{K(x.Source.FormKey)}|{K(x.Template.Item.FormKey)}|reuse={(x.Reused is null ? "" : K(x.Reused.FormKey))}|{string.Join(',', x.Parents.Select(p => K(p.List)))}"))
-            .Append('\n').AppendJoin('\n', catalog.Fallbacks.Select(x => $"{x.Key}|{x.Value.Identity}"))
-            .Append('\n').AppendJoin('\n', catalog.FallbackEdges.Select(e => $"{e.Parent.List}|{e.Child}|{e.Parent.Level}|{e.Parent.Count}"))
-            .Append("\nmerchant-fallback-v1\n").AppendJoin('\n', catalog.MerchantContainerRoots.OrderBy(x => x.Key).Select(x => $"{x.Key}|{x.Value}"))
+        void Lines<T>(IEnumerable<T> items, Action<T> line)
+        {
+            var first = true;
+            foreach (var item in items) { if (!first) text.Append('\n'); first = false; line(item); }
+        }
+        Lines(plans, x => text.Append($"{K(x.Source.FormKey)}|{K(x.Template.Item.FormKey)}|reuse={(x.Reused is null ? "" : K(x.Reused.FormKey))}|")
+            .AppendJoin(',', x.Parents.Select(p => K(p.List))));
+        text.Append('\n');
+        Lines(catalog.Fallbacks, x => text.Append($"{T(x.Key)}|{x.Value.Identity}"));
+        text.Append('\n');
+        Lines(catalog.FallbackEdges, e => text.Append($"{T(e.Parent.List)}|{T(e.Child)}|{e.Parent.Level}|{e.Parent.Count}"));
+        text.Append("\nmerchant-fallback-v1\n").AppendJoin('\n', catalog.MerchantContainerRoots.OrderBy(x => x.Key).Select(x => $"{x.Key}|{x.Value}"))
             .Append("\nmerchant-inventory-isolation-v1\n").AppendJoin('\n', catalog.MerchantInventoryRewrites.Values.OrderBy(r => r.Edge.Container).ThenBy(r => r.Edge.Index).Select(r => $"{r.Edge.Identity}|{r.Root}"))
             .Append("\nloot-recipient-isolation-v1\n").AppendJoin('\n', catalog.LootRecipientRewrites.Values.OrderBy(r => r.Edge.Identity, StringComparer.Ordinal).Select(r => $"{r.Edge.Identity}|{r.Root}"))
-            .Append("\navailability-v1\n").AppendJoin('\n', catalog.Fallbacks.Select(n => $"{n.Key}|global={n.Value.Original.Global.FormKey}"))
-            .Append('\n').AppendJoin('\n', catalog.RuntimePlacements.Select(r => $"{r.Source}|{r.Target}|{r.Child}|{r.Unlock.Quest}|{r.Unlock.Stage}|start={r.Unlock.AtStart}|owner={r.Unlock.OwnerQuest}"))
+            .Append("\navailability-v1\n");
+        Lines(catalog.Fallbacks, n => text.Append($"{T(n.Key)}|global={T(n.Value.Original.Global.FormKey)}"));
+        text.Append('\n').AppendJoin('\n', catalog.RuntimePlacements.Select(r => $"{r.Source}|{r.Target}|{r.Child}|{r.Unlock.Quest}|{r.Unlock.Stage}|start={r.Unlock.AtStart}|owner={r.Unlock.OwnerQuest}"))
             .Append("\nrevert-switch-v3\n").AppendJoin('\n', RevertSwitchGroups(catalog).Keys.Order())
             .Append("\nconflict-resolution-v1\n").AppendJoin('\n', catalog.ConflictResolutions.Values.OrderBy(x => x.List)
                 .Select(x => $"{x.List}|{string.Join(',', (x.Resolved.Entries ?? []).Select(EntryIdentity))}"));
@@ -920,26 +826,36 @@ public static partial class PatcherEngine
         {
             text.Append("\nscript-gates-v2|presence-of-last-block-insertion|closed100|checks16|finite-completion-events\n").AppendJoin('\n', scriptGates.Select(g =>
                 $"{g.Block}|{g.Placeholder}|{g.Representative.Receiver}|{g.Representative.Payload}|{string.Join(",", g.CompletionEvents)}|" + string.Join(';', g.Members.Select(m => $"{m.Receiver}:{m.Payload}:{m.Level}:{m.Count}"))));
-            foreach (var name in new[] { "XEP_ScriptGate", "XEP_ScriptGatePlayerAlias" })
-            foreach (var suffix in new[] { "psc", "pex" })
+            // A compiled script follows from its source, whose hash changes with it. The compiled hashes are those
+            // of the first release, so the identity text stays what earlier versions recorded.
+            foreach (var (name, compiled) in new[] { ("XEP_ScriptGate", "B016CA25581CFED43B31AEB4124CF2F452794E05DC6B9A418EDEB3B85DC16895"),
+                ("XEP_ScriptGatePlayerAlias", "348A8840D4A1961E256A489F5B45FED620F2F04CDE68BE0A93B8455191D6C220") })
             {
-                using var stream = typeof(PatcherEngine).Assembly.GetManifestResourceStream($"XEnchantmentPatcher.Runtime.{name}.{suffix}")!;
-                text.Append($"\n{name}.{suffix}={Convert.ToHexString(SHA256.HashData(stream))}");
+                using var stream = typeof(PatcherEngine).Assembly.GetManifestResourceStream($"XEnchantmentPatcher.Runtime.{name}.psc")!;
+                text.Append($"\n{name}.psc={Convert.ToHexString(SHA256.HashData(stream))}\n{name}.pex={compiled}");
             }
         }
+        return text;
+    }
+
+    private static string Fingerprint(StringBuilder body, IEnumerable<string> outputs, ProfileSettings profile, bool? fullOutputPlugin = null)
+    {
+        var providers = string.Join(",", profile.EnchantmentProviderPlugins);
+        var head = new StringBuilder().AppendJoin('\n', outputs.Select(Path.GetFileName)).Append($"\n{providers}|template-priority=v19-jewelry-coverage|strict=True|broad={profile.BroadUnmatchedDistribution}|resolve-lvli={profile.ResolveLeveledListConflicts}|keep-undistributed={profile.KeepUndistributedVariants}{((fullOutputPlugin ?? profile.FullOutputPlugin) ? "|full-output-plugin" : "")}\n");
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var encoder = Encoding.UTF8.GetEncoder();
         var bytes = new byte[1 << 20];
-        foreach (var chunk in text.GetChunks())
-        {
-            var span = chunk.Span;
-            while (span.Length > 0)
+        foreach (var part in new[] { head, body })
+            foreach (var chunk in part.GetChunks())
             {
-                encoder.Convert(span, bytes, flush: false, out var used, out var written, out _);
-                hash.AppendData(bytes, 0, written);
-                span = span[used..];
+                var span = chunk.Span;
+                while (span.Length > 0)
+                {
+                    encoder.Convert(span, bytes, flush: false, out var used, out var written, out _);
+                    hash.AppendData(bytes, 0, written);
+                    span = span[used..];
+                }
             }
-        }
         encoder.Convert(ReadOnlySpan<char>.Empty, bytes, flush: true, out _, out var tail, out _);
         hash.AppendData(bytes, 0, tail);
         return Convert.ToHexString(hash.GetHashAndReset());
@@ -957,17 +873,6 @@ public static partial class PatcherEngine
                 ? manifest.Fingerprint : null;
         }
         catch { return null; }
-    }
-
-    public static PatchReport Generate(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies, Action<string>? progress = null)
-    {
-        using var session = PhaseTiming.Begin("generate");
-        var requestedOutput = RequestedOutput(settings);
-        var requestedOutputName = Path.GetFileName(requestedOutput);
-        RequireDecisions(policies);
-
-        using var game = LoadOrderProvider.Load(settings, requestedOutputName);
-        return GenerateLoaded(settings, policies, game.Mods, progress);
     }
 
     // With reusePreview, the caller asserts that the snapshot's last Preview is
@@ -991,7 +896,7 @@ public static partial class PatcherEngine
             throw new InvalidOperationException("Every listed plugin must be assigned Existing Distribution or Exclude before generation.");
     }
 
-    private static PatchReport GenerateLoaded(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies,
+    internal static PatchReport GenerateLoaded(AppSettings settings, IReadOnlyDictionary<string, PatchPolicy> policies,
         IReadOnlyList<ISkyrimModGetter> mods, Action<string>? progress = null)
     {
         using var session = PhaseTiming.Begin("generate-loaded");
@@ -1028,7 +933,7 @@ public static partial class PatcherEngine
         StaticEntryProjection projection;
         Dictionary<FormKey, FormKey> merged;
         List<ListImpact> impacts;
-        projection = derived?.Projection ?? EffectiveStaticEntries.Project(catalog, plans);
+        projection = derived?.Projection ?? ProjectStaticEntries(catalog, plans);
         merged = derived?.Merged ?? IdenticalGeneratedLists(catalog, projection);
         var collapse = CollapseGeneratedLists(catalog, projection, merged);
         if (derived is not null) impacts = derived.Impacts;
@@ -1336,7 +1241,7 @@ public static partial class PatcherEngine
         using var reportTiming = PhaseTiming.Measure("report.prepare");
         // The output layout is chosen after the preview; its fingerprint names the preview's files.
         var fingerprint = derived is not null && derived.FullOutputPlugin == settings.CurrentProfile.FullOutputPlugin
-            ? derived.Fingerprint : Fingerprint(plans, outputPaths, settings.CurrentProfile, catalog);
+            ? derived.Fingerprint : Fingerprint(FingerprintBody(plans, catalog), outputPaths, settings.CurrentProfile);
         var plannedSources = plans.Select(p => p.Source.FormKey.ToString()).ToHashSet();
         var skipped = candidates.Where(x => !plannedSources.Contains(x.FormKey)).ToList();
         // Every skipped record states why, including records left unselected by specialized loot review.
@@ -1368,7 +1273,6 @@ public static partial class PatcherEngine
             VariantDecisions = decisions,
             RouteDiagnostics = routeDiagnostics,
             DistributionNotes = catalog.DistributionNotes.Distinct(StringComparer.Ordinal).ToList(),
-            StrictSubtypeMatching = settings.CurrentProfile.StrictSubtypeMatching,
             BroadUnmatchedDistribution = settings.CurrentProfile.BroadUnmatchedDistribution,
             ResolveLeveledListConflicts = settings.CurrentProfile.ResolveLeveledListConflicts,
             KeepUndistributedVariants = settings.CurrentProfile.KeepUndistributedVariants,
@@ -1388,7 +1292,7 @@ public static partial class PatcherEngine
             Fingerprint = fingerprint,
             IdentityChanged = PreviousFingerprint(settings, requestedOutput) is { Length: > 0 } previous && previous != fingerprint,
             ActivePlugins = mods.Count,
-            SelectedPlugins = policies.Count(x => SettingsStore.NormalizePolicy(x.Value) == PatchPolicy.ExistingDistribution),
+            SelectedPlugins = policies.Count(x => x.Value == PatchPolicy.ExistingDistribution),
             SourceItems = bundle.SourceCount,
             Variants = patches.Sum(x => x.Weapons.Count + x.Armors.Count),
             LeveledListsOverridden = changedLists.Count,
@@ -1409,7 +1313,6 @@ public static partial class PatcherEngine
             Setup = new ReportSetup(settings.ProfileName,
                 JsonSerializer.Deserialize(JsonSerializer.Serialize(settings.CurrentProfile, JsonContext.Default.ProfileSettings), JsonContext.Default.ProfileSettings)!,
                 policies.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase),
-                settings.ItemExclusions.Order(StringComparer.OrdinalIgnoreCase).ToList(),
                 mods.Select(m => m.ModKey.FileName.String).ToList())
         };
         reportTiming?.Dispose();
@@ -1423,26 +1326,31 @@ public static partial class PatcherEngine
         return report;
     }
 
-    private static Catalog BuildCatalog(IReadOnlyList<ISkyrimModGetter> mods, IReadOnlyCollection<string> providerNames)
+    internal static Catalog BuildCatalog(IReadOnlyList<ISkyrimModGetter> mods, IReadOnlyCollection<string> providerNames)
     {
         var catalog = BuildCatalogCore(mods, providerNames, false, false, null);
         SelectEnchantmentTemplates(catalog, null);
         return catalog;
     }
 
-    private static Catalog BuildCatalogForProfile(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile)
+    internal static Catalog BuildCatalogForProfile(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile)
     {
         var catalog = BuildProfileCatalog(mods, profile);
         ApplyEnchantmentRecommendations(catalog, profile);
         return catalog;
     }
 
-    private static Catalog BuildProfileCatalog(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile, SkyPatcherInputReport? skyPatcher = null)
+    internal static Catalog BuildProfileCatalog(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile, SkyPatcherInputReport? skyPatcher = null)
         => BuildNativeProfileCatalog(mods, profile, skyPatcher, null);
 
     // Separate name: fixtures reach BuildProfileCatalog by reflection with three arguments.
-    private static Catalog BuildNativeProfileCatalog(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile, SkyPatcherInputReport? skyPatcher, LlosInputReport? llos)
-        => BuildCatalogCore(mods, profile.EnchantmentProviderPlugins, profile.BroadUnmatchedDistribution, profile.ResolveLeveledListConflicts, profile.MaterialFamilyOverrides, skyPatcher, llos);
+    internal static Catalog BuildNativeProfileCatalog(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile, SkyPatcherInputReport? skyPatcher, LlosInputReport? llos)
+        => BuildProfileCatalogOver(mods, profile, skyPatcher, llos, LoadOrderWinners(mods));
+
+    // The scan's catalog over the winner index its input captures already built.
+    private static Catalog BuildProfileCatalogOver(IReadOnlyList<ISkyrimModGetter> mods, ProfileSettings profile, SkyPatcherInputReport? skyPatcher,
+        LlosInputReport? llos, Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners)
+        => BuildCatalogCore(mods, profile.EnchantmentProviderPlugins, profile.BroadUnmatchedDistribution, profile.ResolveLeveledListConflicts, profile.MaterialFamilyOverrides, skyPatcher, llos, winners);
 
     private static KeywordIndex NewKeywordIndex(IReadOnlyList<ISkyrimModGetter> mods)
         => new(mods.SelectMany(x => x.Keywords).GroupBy(x => x.FormKey).ToDictionary(x => x.Key, x => x.Last().EditorID ?? ""));
@@ -1467,7 +1375,8 @@ public static partial class PatcherEngine
 
     private static Catalog BuildCatalogCore(IReadOnlyList<ISkyrimModGetter> mods, IReadOnlyCollection<string> providerNames,
         bool broadUnmatchedDistribution,
-        bool resolveLeveledListConflicts = false, IReadOnlyDictionary<string, string>? materialFamilyOverrides = null, SkyPatcherInputReport? skyPatcher = null, LlosInputReport? llos = null)
+        bool resolveLeveledListConflicts = false, IReadOnlyDictionary<string, string>? materialFamilyOverrides = null, SkyPatcherInputReport? skyPatcher = null, LlosInputReport? llos = null,
+        Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>? winners = null)
     {
         using var timing = PhaseTiming.Measure("catalog");
         ScanProgress.Enter(ScanStage.Catalog);
@@ -1517,6 +1426,7 @@ public static partial class PatcherEngine
         var catalog = new Catalog
         {
             Mods = mods,
+            RuntimeWinningRecords = winners ?? LoadOrderWinners(mods),
             SkyPatcher = skyPatcher,
             NativeLists = nativeLists,
             LlosLists = llosLists,
@@ -1534,8 +1444,7 @@ public static partial class PatcherEngine
             AllTemplates = allTemplates,
             ObjectEffects = objectEffects,
             MagicEffectRecords = magicEffects,
-            QuestLists = mods.SelectMany(m => m.Quests).GroupBy(q => q.FormKey).Select(g => g.Last())
-                .SelectMany(q => q.EnumerateFormLinks()).Select(l => l.FormKey).Where(lists.ContainsKey).ToHashSet(),
+            QuestLists = QuestLinks(mods).SelectMany(q => q.Keys).Where(lists.ContainsKey).ToHashSet(),
             TemplatesByClass = []
             ,WinningPlugins = winningPlugins,
             BroadUnmatchedDistribution = broadUnmatchedDistribution
@@ -1613,10 +1522,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private static List<EnchantmentSelectionOption> BuildEnchantmentOptions(Catalog catalog, ProfileSettings profile)
-        => BuildEnchantmentOptionsWithAuthor(catalog, profile, null);
-
-    private static List<EnchantmentSelectionOption> BuildEnchantmentOptionsWithAuthor(Catalog catalog, ProfileSettings profile, AuthorApplication? author)
+    internal static List<EnchantmentSelectionOption> BuildEnchantmentOptionsWithAuthor(Catalog catalog, ProfileSettings profile, AuthorApplication? author)
     {
         var providers = profile.EnchantmentProviderPlugins.Select(x => ModKey.FromFileName(x)).ToHashSet();
         var templates = catalog.AllTemplates.GroupBy(x => x.Enchantment).ToDictionary(x => x.Key, x => x.ToArray());
@@ -1686,7 +1592,7 @@ public static partial class PatcherEngine
             .ToList();
     }
 
-    private static Dictionary<FormKey, List<ParentEntry>> BuildDirectParents(IEnumerable<ILeveledItemGetter> lists)
+    internal static Dictionary<FormKey, List<ParentEntry>> BuildDirectParents(IEnumerable<ILeveledItemGetter> lists)
     {
         var result = new Dictionary<FormKey, List<ParentEntry>>();
         foreach (var list in lists)
@@ -1754,7 +1660,7 @@ public static partial class PatcherEngine
     // Keep the complete catalog: even equipment without a distribution route can
     // supply templates, materials, overrides or script evidence for other sources.
     // Only per-item candidate analysis is restricted, before its expensive work.
-    private static List<CandidateItem> FindDistributionCandidates(IReadOnlyList<ISkyrimModGetter> mods, Catalog catalog, ProfileSettings profile)
+    internal static List<CandidateItem> FindDistributionCandidates(IReadOnlyList<ISkyrimModGetter> mods, Catalog catalog, ProfileSettings profile)
     {
         HashSet<FormKey> sources;
         using (PhaseTiming.Measure("scan-candidate-sources"))
@@ -1768,9 +1674,9 @@ public static partial class PatcherEngine
         }
         return FindCandidatesCore(mods, catalog, sources);
     }
-    private static List<CandidateItem> FindCandidates(IReadOnlyList<ISkyrimModGetter> mods, Catalog catalog)
+    internal static List<CandidateItem> FindCandidates(IReadOnlyList<ISkyrimModGetter> mods, Catalog catalog)
         => FindCandidatesCore(mods, catalog, null);
-    private static List<CandidateItem> FindCandidatesCore(IReadOnlyList<ISkyrimModGetter> mods, Catalog catalog, HashSet<FormKey>? restrictTo)
+    internal static List<CandidateItem> FindCandidatesCore(IReadOnlyList<ISkyrimModGetter> mods, Catalog catalog, HashSet<FormKey>? restrictTo)
     {
         using var timing = PhaseTiming.Measure("scan-candidates");
         ScanProgress.Enter(ScanStage.Candidates);
@@ -1795,17 +1701,12 @@ public static partial class PatcherEngine
             var reason = ExclusionReason(record, catalog.KeywordNames);
             var cls = CachedClass(record, catalog);
             var shape = CachedShape(record, catalog);
-            var classTemplates = cls is null ? null : catalog.TemplatesByClass.GetValueOrDefault(ClassKey(cls));
-            var useBroad = catalog.BroadUnmatchedDistribution && shape is not null
-                && (cls is null || !IsOwnBaseMaterial(cls.Material))
-                && (cls is null || classTemplates is null || classTemplates.Count == 0);
-            var broadTemplates = useBroad ? catalog.Templates.Where(t => ShapeMatches(shape!, t.Class)).ToList() : null;
+            var (unrestrictedTemplates, useBroad) = ExactOrBroadTemplates(catalog.BroadUnmatchedDistribution, cls, shape, catalog);
             var materialIndex = catalog.KeywordNames as KeywordIndex;
             var materialResolution = materialIndex?.Resolved.GetValueOrDefault(record.FormKey);
             var materialProblem = materialIndex?.Unresolved.GetValueOrDefault(record.FormKey);
             if (reason.Length == 0 && cls is null && !useBroad)
                 reason = "Unsupported or ambiguous material/type/slot" + (materialProblem is null ? "" : ": " + materialProblem);
-            var unrestrictedTemplates = useBroad ? broadTemplates : classTemplates;
             var selectedTemplates = SourceTemplates(record.FormKey, unrestrictedTemplates, catalog);
             var variantCount = selectedTemplates is null || selectedTemplates.Count == 0 ? 0
                 : (useBroad ? TemplatesForBroadSource(record, selectedTemplates, catalog) : TemplatesForExactSource(record, selectedTemplates, catalog)).Length;
@@ -1847,20 +1748,19 @@ public static partial class PatcherEngine
         if (record is IWeaponGetter weapon && weapon.MajorFlags.HasFlag(Weapon.MajorFlag.NonPlayable)) return "Non-playable weapon";
         var names = Keywords(record).Select(x => keywordNames.GetValueOrDefault(x.FormKey, "")).ToArray();
         if (names.Any(x => x.Contains("DisallowEnchanting", StringComparison.OrdinalIgnoreCase) ||
-                           x.Contains("DaedricArtifact", StringComparison.OrdinalIgnoreCase) ||
                            x.Contains("Artifact", StringComparison.OrdinalIgnoreCase))) return "Artifact or disenchanting restriction keyword";
         if (record is IWeaponGetter w && w.Data?.AnimationType is WeaponAnimationType.Staff) return "Unsupported weapon animation type";
         return "";
     }
 
-    private static EquipmentClass? Classify(IMajorRecordGetter record, IReadOnlyDictionary<FormKey, string> keywordNames)
+    internal static EquipmentClass? Classify(IMajorRecordGetter record, IReadOnlyDictionary<FormKey, string> keywordNames)
     {
         var shape = ClassifyShape(record, keywordNames);
         if (shape is null || shape.Materials.Length != 1) return null;
         return new(shape.Signature, shape.Materials[0], shape.Type, shape.ArmorType);
     }
 
-    private static EquipmentShape? ClassifyShape(IMajorRecordGetter record, IReadOnlyDictionary<FormKey, string> keywordNames)
+    internal static EquipmentShape? ClassifyShape(IMajorRecordGetter record, IReadOnlyDictionary<FormKey, string> keywordNames)
         => ClassifyShapeFromLabels(record, keywordNames,
             Keywords(record).Select(x => keywordNames.GetValueOrDefault(x.FormKey, "")).Where(x => x.Length > 0).ToArray());
 
@@ -1953,7 +1853,16 @@ public static partial class PatcherEngine
            && shape.Type.Equals(cls.Type, StringComparison.OrdinalIgnoreCase)
            && shape.ArmorType == cls.ArmorType;
 
-    private static string? MaterialFromKeyword(string label)
+    // Broad (same-shape) templates replace exact ones only when the user allows them, the item
+    // has no exact template and its material is not an own base material.
+    private static (List<EnchantedTemplate>? Templates, bool Broad) ExactOrBroadTemplates(bool allowed, EquipmentClass? cls, EquipmentShape? shape, Catalog catalog)
+    {
+        var exact = cls is null ? null : catalog.TemplatesByClass.GetValueOrDefault(ClassKey(cls));
+        return allowed && shape is not null && exact is not { Count: > 0 } && (cls is null || !IsOwnBaseMaterial(cls.Material))
+            ?(catalog.Templates.Where(t => ShapeMatches(shape, t.Class)).ToList(), true) : (exact, false);
+    }
+
+    internal static string? MaterialFromKeyword(string label)
     {
         foreach (var marker in new[] { "WeapMaterial", "WeaponMaterial", "ArmorMaterial" })
         {
@@ -1998,7 +1907,7 @@ public static partial class PatcherEngine
         return best ?? throw new InvalidOperationException("Sequence contains no elements");
     }
 
-    private static EnchantedTemplate[] TemplatesForSource(IMajorRecordGetter source, IEnumerable<EnchantedTemplate> templates, Catalog catalog)
+    internal static EnchantedTemplate[] TemplatesForSource(IMajorRecordGetter source, IEnumerable<EnchantedTemplate> templates, Catalog catalog)
     {
         return templates.GroupBy(x => x.Enchantment.ModKey)
             .SelectMany(group =>
@@ -2092,7 +2001,7 @@ public static partial class PatcherEngine
         return Path.Combine(Path.GetFullPath(settings.OutputFolder), OutputFileName);
     }
 
-    private static void WriteAndValidate(IReadOnlyList<SkyrimMod> patches, IReadOnlyList<ISkyrimModGetter> mods,
+    internal static void WriteAndValidate(IReadOnlyList<SkyrimMod> patches, IReadOnlyList<ISkyrimModGetter> mods,
         string requestedOutput, IReadOnlyList<string> outputs, PatchReport report,
         IReadOnlySet<FormKey> permittedUnreachable, CdfOutput? cdfOutput = null)
     {
@@ -2221,18 +2130,28 @@ public static partial class PatcherEngine
             reportWriteTiming?.Dispose();
             using var installTiming = PhaseTiming.Measure("write.install");
             OperationProgress.Stage("Installing validated output…", GenerationStage.Install);
-            RemoveStaleOutputs(requestedOutput, outputs);
-            foreach(var old in OwnedRuntimeFiles(requestedOutput).Where(File.Exists))File.Delete(old);
-            foreach(var (staged,relative) in support)
+            try
             {
-                var target=Path.Combine(directory,relative);
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);File.Move(staged,target,true);
+                RemoveStaleOutputs(requestedOutput, outputs);
+                foreach(var old in OwnedRuntimeFiles(requestedOutput).Where(File.Exists))File.Delete(old);
+                foreach(var (staged,relative) in support)
+                {
+                    var target=Path.Combine(directory,relative);
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);Place(staged,target);
+                }
+                for (var index = 0; index < outputs.Count; index++)
+                    Place(stagedPlugins[index], outputs[index]);
+                Place(stagedReport, reportPath);
+                Place(stagedManifest, manifestPath);
             }
-            for (var index = 0; index < outputs.Count; index++)
-                File.Move(stagedPlugins[index], outputs[index], true);
-            File.Move(stagedReport, reportPath, true);
-            if (File.Exists(LegacyReportPath(requestedOutput))) File.Delete(LegacyReportPath(requestedOutput));
-            File.Move(stagedManifest, manifestPath, true);
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                var placed = support.Select(x => Path.Combine(directory, x.Relative)).Concat(outputs).Append(reportPath).Append(manifestPath);
+                throw new OutputInstallException($"The new output could not be installed. {ex.Message}\n\n" + (RestoreOutput(backup, placed)
+                    ? "The output folder was put back as it was before the generation."
+                    : "The output folder now holds an incomplete output; do not start the game with it." + (backup is null ? "" : $" The previous output is in {backup.Folder}."))
+                    + " Close the game, xEdit and any other program that has the XEnchantmentPatcher output open, then generate again.");
+            }
         }
         finally
         {
@@ -2251,14 +2170,7 @@ public static partial class PatcherEngine
 
     // Every generated equipment record and leveled list must be reachable from an
     // overridden authored loot recipient/list or a runtime insertion quest.
-    private static void ValidateReachability(IReadOnlyList<string> stagedPlugins)
-        => ValidateReachabilityWithExceptions(stagedPlugins, new HashSet<FormKey>());
-
-    private static void ValidateReachabilityWithExceptions(IReadOnlyList<string> stagedPlugins,
-        IReadOnlySet<FormKey> permittedUnreachable)
-        => ValidateReachabilityCore(stagedPlugins, permittedUnreachable, new HashSet<FormKey>());
-
-    private static void ValidateReachabilityCore(IReadOnlyList<string> stagedPlugins,
+    internal static void ValidateReachabilityCore(IReadOnlyList<string> stagedPlugins,
         IReadOnlySet<FormKey> permittedUnreachable, IReadOnlySet<FormKey> externalRoots)
     {
         var checks = stagedPlugins.Select(path => SkyrimMod.CreateFromBinaryOverlay(path, SkyrimRelease.SkyrimSE)).ToArray();
@@ -2302,7 +2214,7 @@ public static partial class PatcherEngine
         finally { foreach (var check in checks) check.Dispose(); }
     }
 
-    private static void ValidateAllReferences(IReadOnlyList<string> stagedPlugins, IReadOnlyList<ISkyrimModGetter> mods)
+    internal static void ValidateAllReferences(IReadOnlyList<string> stagedPlugins, IReadOnlyList<ISkyrimModGetter> mods)
     {
         // COED's second word is a rank for faction owners, but a global FormID
         // for NPC owners. Standalone overlays cannot type an owner in a master:
@@ -2321,7 +2233,7 @@ public static partial class PatcherEngine
         finally { foreach (var check in untyped) check.Dispose(); }
     }
 
-    private static void ValidateReferenceRecords(IReadOnlyList<ISkyrimModGetter> checks, IReadOnlyList<ISkyrimModGetter> mods)
+    internal static void ValidateReferenceRecords(IReadOnlyList<ISkyrimModGetter> checks, IReadOnlyList<ISkyrimModGetter> mods)
     {
         using var enumerationTiming = PhaseTiming.Measure("validation.reference-links");
         var references = new FormKey[checks.Count][];
@@ -2332,8 +2244,6 @@ public static partial class PatcherEngine
         var playerPresent = mods.Any(m => m.ModKey == PlayerReference.ModKey);
         var missing = ReferenceKeyIndex.FindMissing(references.SelectMany(r => r).Where(k => !playerPresent || k != PlayerReference), mods, checks);
         using var resolutionTiming = PhaseTiming.Measure("validation.reference-errors");
-        // The engine creates the player reference whenever its master loads; no plugin stores it.
-        if (mods.Any(m => m.ModKey == PlayerReference.ModKey)) missing.Remove(PlayerReference);
         for (var i = 0; i < checks.Count; i++)
         {
             var check = checks[i];
@@ -2356,6 +2266,33 @@ public static partial class PatcherEngine
         if (files.Length == 0) return null;
         var directory = Path.GetDirectoryName(requestedOutput)!;
         return new(Path.Combine(directory, "Backups", DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")), directory, files);
+    }
+
+    // A refused move onto a file another program holds does not name the file.
+    private static void Place(string staged, string target)
+    {
+        try { File.Move(staged, target, true); }
+        catch (UnauthorizedAccessException ex) { throw new IOException($"{target}: {ex.Message}", ex); }
+    }
+
+    // After an install that stopped part-way: removes the files it placed and copies the
+    // previous ones back. False when the folder could not be brought back.
+    private static bool RestoreOutput(OutputBackup? plan, IEnumerable<string> placed)
+    {
+        try
+        {
+            var previous = (plan?.Files ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in placed.Where(x => !previous.Contains(x) && File.Exists(x))) File.Delete(file);
+            foreach (var file in previous)
+            {
+                var copy = new FileInfo(Path.Combine(plan!.Folder, Path.GetRelativePath(plan.Directory, file)));
+                var current = new FileInfo(file);
+                // A copy keeps the write time: a file the install did not reach needs no restore, and may be the held one.
+                if (!current.Exists || current.Length != copy.Length || current.LastWriteTimeUtc != copy.LastWriteTimeUtc) copy.CopyTo(file, true);
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 
     private static string? CreateOutputBackup(OutputBackup? plan)
@@ -2382,24 +2319,17 @@ public static partial class PatcherEngine
                 yield return path;
         }
         yield return ReportPath(requestedOutput);
-        yield return LegacyReportPath(requestedOutput);
         yield return Path.ChangeExtension(requestedOutput, ".manifest.json");
         foreach(var support in OwnedRuntimeFiles(requestedOutput))yield return support;
     }
 
     internal static string ReportPath(string requestedOutput) => Path.ChangeExtension(requestedOutput, ".report.json.gz");
-    // Uncompressed reports from earlier versions; installing a new report removes it.
-    private static string LegacyReportPath(string requestedOutput) => Path.ChangeExtension(requestedOutput, ".report.json");
 
     private static IEnumerable<string> OwnedRuntimeFiles(string requestedOutput)
     {
         if (OwnedCdfFile(requestedOutput) is { } cdfFile) yield return cdfFile;
         var directory=Path.GetDirectoryName(requestedOutput)!;
-        yield return Path.Combine(directory,"Scripts","XEP_QuestInsertion.pex");
-        yield return Path.Combine(directory,"Source","Scripts","XEP_QuestInsertion.psc");
-        // The XEP_RuntimeMirror* names are retired mode 7 scripts. They are kept here only so
-        // regenerating over an earlier mode 7 install removes its leftover script files.
-        foreach (var name in new[] { "XEP_RuntimeMirror", "XEP_RuntimeMirrorPlayerAlias", "XEP_RuntimeMirrorRow", "XEP_RuntimeMirrorWrapper", "XEP_RuntimeMirrorScheduler", "XEP_ScriptGate", "XEP_ScriptGatePlayerAlias" })
+        foreach (var name in new[] { "XEP_QuestInsertion", "XEP_ScriptGate", "XEP_ScriptGatePlayerAlias" })
         {
             yield return Path.Combine(directory,"Scripts",name+".pex");
             yield return Path.Combine(directory,"Source","Scripts",name+".psc");
@@ -2465,7 +2395,7 @@ public static partial class PatcherEngine
     };
 
     private static bool LooksLikeEquipment(IMajorRecordGetter item) => item is IWeaponGetter or IArmorGetter;
-    private static string ClassKey(EquipmentClass cls) => $"{cls.Signature}|{cls.Material}|{cls.Type}|{cls.ArmorType}".ToLowerInvariant();
+    internal static string ClassKey(EquipmentClass cls) => $"{cls.Signature}|{cls.Material}|{cls.Type}|{cls.ArmorType}".ToLowerInvariant();
     [GeneratedRegex(@"[^\p{L}\p{Nd}]+")]
     private static partial Regex EditorIdInvalidCharacters();
 }

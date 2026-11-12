@@ -19,8 +19,6 @@ public sealed record CidInputReport(string Status, string Version, string DllSha
     string Fingerprint, IReadOnlyList<CidFile> Files, IReadOnlyList<string> Diagnostics)
 {
     internal IReadOnlyList<string> Information { get; init; } = [];
-    internal IReadOnlyDictionary<string, ReadOnlyMemory<byte>> CapturedBytes { get; init; }
-        = new Dictionary<string, ReadOnlyMemory<byte>>();
 }
 
 // Input inventory bound to the pinned Container Item Distributor 2.1.3 source
@@ -33,35 +31,33 @@ internal static class CidInputs
     // records project sources matching the pinned tree; see cid-213-contract.md.
     private const string SourceMatchedDll = "240973620D86B583078A7870D7EF1EA6D320CC7697654E9143416A12F03273F4";
 
-    public static CidInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods,
-        Func<IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>>? winners = null,
-        NativeFormResolver? sharedResolver = null)
+    // The simple form for fixtures: builds the scan environment for one Data folder.
+    public static CidInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods)
+        => Capture(FrameworkInputs.Create(dataFolder, mods));
+
+    internal static CidInputReport Capture(FrameworkInputs inputs)
     {
         using var timing = PhaseTiming.Measure("cid.capture");
-        if (string.IsNullOrWhiteSpace(dataFolder) || !Directory.Exists(dataFolder)) return Empty();
+        if (!inputs.Exists) return Empty();
         var notes = new DiagnosticMessages();
-        var bytes = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal);
         var incomplete = false;
-        var plugins = Path.Combine(dataFolder, "SKSE", "Plugins");
-        var dllPath = Path.Combine(plugins, "ContainerItemDistributor.dll");
-        var dll = File.Exists(dllPath) ? dllPath : null;
-        var configs = new List<(string Physical, string Native, string Relative)>();
+        var dll = inputs.PluginFile("ContainerItemDistributor.dll")?.Path;
+        var configs = new List<(ListedEntry Entry, string Native, string Relative)>();
         using (PhaseTiming.Measure("cid.discovery"))
-        try
         {
             // Parser::ParseINIs: non-recursive Data\, exact ".ini" extension and a
             // case-sensitive "_CID.ini" suffix. Directory entries are listed too.
-            foreach (var path in Directory.EnumerateFileSystemEntries(dataFolder))
+            // A failed Data listing keeps the entries read before the error.
+            foreach (var entry in inputs.Data)
             {
-                var name = Path.GetFileName(path);
-                if (LlosInputs.NativeExtension(name) != ".ini" || !name.EndsWith("_CID.ini", StringComparison.Ordinal)) continue;
-                configs.Add((path, @"Data\" + name, name));
+                if (LlosInputs.NativeExtension(entry.Name) != ".ini" || !entry.Name.EndsWith("_CID.ini", StringComparison.Ordinal)) continue;
+                configs.Add((entry, @"Data\" + entry.Name, entry.Name));
             }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            incomplete = true;
-            notes.Add("CID discovery incomplete: " + ex.Message);
+            if (inputs.DataError is { } discoveryError)
+            {
+                incomplete = true;
+                notes.Add("CID discovery incomplete: " + discoveryError);
+            }
         }
         if (dll is null && configs.Count == 0) return Empty();
 
@@ -70,9 +66,9 @@ internal static class CidInputs
         if (dll is not null)
             try
             {
-                using var stream = File.OpenRead(dll);
-                dllHash = Convert.ToHexString(SHA256.HashData(stream));
-                version = SksePluginVersion.Read(dll) ?? "unknown";
+                var dllIdentity = DllIdentity.ReadSkse(dll);
+                dllHash = dllIdentity.Sha256;
+                version = dllIdentity.Version;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -82,26 +78,25 @@ internal static class CidInputs
 
         // Parser::ParseINIs runs only after Listener's kDataLoaded po3_Tweaks gate; without it
         // CID reports a fatal error, so no configuration is loaded.
-        var resolver = sharedResolver ?? new NativeFormResolver(mods, winners ?? (() => PatcherEngine.LoadOrderWinners(mods)));
-        var editorIds = LlosInputs.EditorIdSupport(plugins);
-        var gated = dll is not null && !File.Exists(Path.Combine(plugins, "po3_Tweaks.dll"));
+        var resolver = inputs.Resolver;
+        var editorIds = inputs.EditorIdSupport;
+        var gated = dll is not null && !inputs.Po3DllPresent;
         var files = new List<CidFile>();
         var stopped = false;
         var index = 0;
-        foreach (var (physical, native, relative) in configs.OrderBy(c => c.Native, StringComparer.Ordinal))
+        foreach (var (entry, native, relative) in configs.OrderBy(c => c.Native, StringComparer.Ordinal))
         {
             try
             {
-                if ((File.GetAttributes(physical) & FileAttributes.Directory) != 0)
+                if (entry.IsDirectory)
                 {
                     // directory_iterator yields directories too; LoadFile then fails.
                     files.Add(new(relative, native, "", "not-a-file", []));
                     continue;
                 }
-                if ((File.GetAttributes(physical) & FileAttributes.ReparsePoint) != 0)
+                if (entry.IsLink)
                     throw new IOException("File link was not followed: " + relative);
-                var content = File.ReadAllBytes(physical);
-                bytes.Add(relative, content);
+                var content = File.ReadAllBytes(entry.Path);
                 var status = dll is null ? "missing-dll" : gated ? "dependency-missing" : "active";
                 var rules = new List<CidRule>();
                 if (!gated)
@@ -126,7 +121,7 @@ internal static class CidInputs
                             index++;
                         }
                 }
-                files.Add(new(relative, native, Hash(content), status, rules.AsReadOnly()));
+                files.Add(new(relative, native, FrameworkFiles.Hash(content), status, rules.AsReadOnly()));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -136,7 +131,7 @@ internal static class CidInputs
             }
         }
 
-        var release = ReleaseStatus(version, dllHash);
+        var release = Release.Status(version, dllHash);
         // A native std::stoul throw terminates the game during data load, so the report reads as such.
         var overall = incomplete ? "incomplete-capture" : dll is null ? "missing-dll" : gated ? "dependency-missing"
             : stopped ? "native-exception" : release;
@@ -177,20 +172,15 @@ internal static class CidInputs
         var identity = $"cid-capture-v1\n{Source}\n{overall}\n{version}\n{dllHash}\n{editorIds}\n" +
             string.Join('\n', files.Select(f => $"{f.NativePath}|{f.Sha256}|{f.Status}")) +
             // Resolution depends on the load order as well as the configuration bytes.
-            "\nrefs=" + Hash(Encoding.UTF8.GetBytes(string.Join('\n', rulesAll.SelectMany(r => r.References.Select(x =>
+            "\nrefs=" + FrameworkFiles.Hash(Encoding.UTF8.GetBytes(string.Join('\n', rulesAll.SelectMany(r => r.References.Select(x =>
                 $"{r.Index}|{x.Field}|{x.Identifier}|{x.Status}|{x.FormKey}")))));
-        return new(overall, version, dllHash, Source, Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
-        { Information = notes.Information, CapturedBytes = bytes.AsReadOnly() };
+        return new(overall, version, dllHash, Source, FrameworkFiles.Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
+        { Information = notes.Information };
     }
 
-    // Framework version acceptance: the verified build silently, its major
-    // version with a label, any other or unreadable major with a warning.
-    internal static string ReleaseStatus(string version, string dllHash)
-        => version == "2.1.3.0" && dllHash == SourceMatchedDll ? "source-matched-2.1.3"
-            : SkyPatcherInputs.Major(version) == 2 ? "accepted-major-2" : "accepted-other-major";
+    internal static readonly FrameworkRelease Release = new("2.1.3.0", SourceMatchedDll, 2, "2.1.3");
 
     private static CidInputReport Empty() => new("absent", "", "", Source, "", [], []);
-    private static string Hash(byte[] content) => Convert.ToHexString(SHA256.HashData(content));
     private static string AsciiLower(string text) => new(text.Select(c => c is >= 'A' and <= 'Z' ? (char)(c + 32) : c).ToArray());
 
     private static CidRule Skipped(int index, string container, LlosField field)
@@ -322,9 +312,9 @@ internal static class CidInputs
                 ContainerScope = scope
             };
         }
-        catch (NativeException ex)
+        catch (NativeConversionException ex)
         {
-            diagnostics.Add(ex.Message + ": CID 2.1.3 terminates the game during data load, so no CID rule takes effect.");
+            diagnostics.Add($"std::stoul {(ex.OutOfRange ? "out of range for" : "invalid argument")} '{ex.Text}': CID 2.1.3 terminates the game during data load, so no CID rule takes effect.");
             return new(index, field.Line, to, value, operation, "native-exception", 0, 100, null, null, [], diagnostics);
         }
     }
@@ -344,14 +334,9 @@ internal static class CidInputs
             if (editorIds != "available" && found is not IKeywordGetter) return ("editorid-cache-unavailable", null);
             return (status, found);
         }
-        var formId = Stoul(identifier[..tilde], 16);
-        var name = identifier[(tilde + 1)..];
-        if (!resolver.TryGetPlugin(name, out var plugin)) return ("missing-plugin", null);
-        // CommonLib composes the runtime prefix with the raw value; a value outside the local range is refused, not masked.
-        if (formId > (plugin.IsSmallMaster ? 0xFFFu : 0xFFFFFFu)) return ("outside-local-range", null);
-        var record = resolver.Winner(new FormKey(plugin.ModKey, formId));
-        if (record is null) return ("missing-record", null);
-        return ("resolved", record);
+        // Map::ToFormID: the hex part goes through std::stoul. FormIDs above the plugin's local range are refused.
+        var (failure, record) = FormLocator.Locate(resolver, identifier[(tilde + 1)..], NativeNumbers.Stoul(identifier[..tilde], 16), FormIdRange.Refuse);
+        return failure is null ? ("resolved", record) : (failure, null);
     }
 
     // Utility::ResolveLeveledList is not reached here; this is the bound-object type gate of
@@ -371,34 +356,5 @@ internal static class CidInputs
     private static string? TypeName(IMajorRecordGetter? record) => record?.GetType().Name;
 
     // Map::ToUnsignedInt: std::stoul (base 10) truncated to u16.
-    private static ushort ToUnsignedInt(string text) => (ushort)Stoul(text, 10);
-
-    // std::stoul on a 32-bit unsigned long: leading whitespace, optional sign, digits of the radix
-    // (an optional 0x prefix in base 16 when a hex digit follows); trailing text is ignored. No digits
-    // or a magnitude above 2^32-1 throws (libstdc++ invalid_argument / out_of_range); a sign wraps modulo 2^32.
-    internal static uint Stoul(string text, int radix)
-    {
-        var i = 0;
-        while (i < text.Length && IsSpace(text[i])) i++;
-        var negative = i < text.Length && text[i] == '-';
-        if (i < text.Length && text[i] is '+' or '-') i++;
-        if (radix == 16 && i + 2 < text.Length && text[i] == '0' && text[i + 1] is 'x' or 'X' && Uri.IsHexDigit(text[i + 2])) i += 2;
-        var start = i;
-        ulong value = 0;
-        for (; i < text.Length; i++)
-        {
-            var c = text[i];
-            var digit = c is >= '0' and <= '9' ? c - '0' : radix == 16 && Uri.IsHexDigit(c) ? char.ToUpperInvariant(c) - 'A' + 10 : -1;
-            if (digit < 0) break;
-            value = value * (ulong)radix + (ulong)digit;
-            if (value > uint.MaxValue) throw new NativeException($"std::stoul out of range for '{text}'");
-        }
-        if (i == start) throw new NativeException($"std::stoul invalid argument '{text}'");
-        return negative ? unchecked(0u - (uint)value) : (uint)value;
-    }
-
-    private static bool IsSpace(char c) => c is ' ' or '\t' or '\n' or '\v' or '\f' or '\r';
-
-    // Thrown where the native conversion would throw inside a noexcept function.
-    private sealed class NativeException(string message) : Exception(message);
+    private static ushort ToUnsignedInt(string text) => (ushort)NativeNumbers.Stoul(text, 10);
 }

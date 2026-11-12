@@ -15,7 +15,7 @@ namespace XEnchantmentPatcher;
 // RuntimeSliceScope; without one they keep whole-frame proofs.
 public static partial class PatcherEngine
 {
-    private sealed class RuntimeSliceScope(ModKey source)
+    internal sealed class RuntimeSliceScope(ModKey source)
     {
         public ModKey Source { get; } = source;
         public List<string> Warnings { get; } = [];
@@ -23,7 +23,7 @@ public static partial class PatcherEngine
     // The script whose unproved operation can reach a list. Property names a VMAD
     // binding whose slice proof decides the taint; Receiver marks a list-receiver proof.
     // Flow marks a taint the slice flow re-proves from the operation itself.
-    private sealed record RuntimeListTaint(string Instance, string Reason, string? Property, bool Receiver, bool Flow = false);
+    internal sealed record RuntimeListTaint(string Instance, string Reason, string? Property, bool Receiver, bool Flow = false);
 
     private static ModKey SliceSourceMod(ScriptInstance instance) => instance.Quest.FormKey.ModKey;
     private static bool InSliceScope(FormKey record, ModKey source, Catalog catalog) => record.ModKey == source
@@ -152,8 +152,8 @@ public static partial class PatcherEngine
             var combined = texts[0] + string.Concat(texts.Skip(1).Select(t => "\n" + Regex.Replace(t, @"(?im)^[^\S\n]*scriptname\b[^\n]*", m => new string(' ', m.Length))));
             if (combined.Length > 1_000_000) return catalog.RuntimeSliceChainViews[caller.Identity] = (null, "custom inheritance chain exceeds the text bound");
             var view = new ScriptInstance { Quest = caller.Quest, Name = caller.Name, Alias = caller.Alias, ScriptSlot = caller.ScriptSlot,
-                AliasSlot = caller.AliasSlot, AliasIdentity = caller.AliasIdentity, BindingEntry = caller.BindingEntry,
-                WinningQuestPlugin = caller.WinningQuestPlugin, BindingMetadataProblem = caller.BindingMetadataProblem, Chain = names.ToArray(),
+                AliasSlot = caller.AliasSlot, AliasIdentity = caller.AliasIdentity,
+                BindingMetadataProblem = caller.BindingMetadataProblem, Chain = names.ToArray(),
                 Text = combined, Evidence = caller.Evidence + "; custom chain " + string.Join(" > ", names) + "; " + string.Join("; ", evidence),
                 DiagnosticAssetEvidence = caller.DiagnosticAssetEvidence };
             view.VmadHandles.AddRange(caller.VmadHandles);

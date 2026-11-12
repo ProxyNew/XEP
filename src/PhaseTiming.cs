@@ -12,7 +12,7 @@ namespace XEnchantmentPatcher;
 // phase's self time. Its allocation stays in the enclosing phase's self figures.
 internal static class PhaseTiming
 {
-    private static readonly AsyncLocal<Session?> Current = new();
+    internal static readonly AsyncLocal<Session?> Current = new();
     private static int nextId;
 
     public static IDisposable? Begin(string operation)

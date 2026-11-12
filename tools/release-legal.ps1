@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference='Stop'
 $assets=Get-Content -LiteralPath $AssetsFile -Raw|ConvertFrom-Json
 $catalog=Get-Content -LiteralPath (Join-Path $Root 'licenses/dependencies.json') -Raw|ConvertFrom-Json
-$legal=Join-Path $Stage 'licenses'
+$legal=Join-Path $Stage 'XEnchantmentPatcher-docs/licenses'
 New-Item -ItemType Directory -Path $legal -Force|Out-Null
 Get-ChildItem -LiteralPath (Join-Path $Root 'licenses') | Where-Object Name -NotIn @('sources','.gitignore') | ForEach-Object {
  Copy-Item -LiteralPath $_.FullName -Destination $legal -Recurse -Force
@@ -26,9 +26,6 @@ foreach($download in $downloads){
  if(Test-Path -LiteralPath $cached -PathType Leaf){Copy-Item -LiteralPath $cached -Destination $target}
  else{Invoke-WebRequest -Uri $download.Url -OutFile $target}
  if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ine $download.Sha256){throw "Upstream source hash mismatch: $($download.Archive)"}
-}
-foreach($name in @('LICENSE','LICENSING.md','THIRD-PARTY-NOTICES.md','README.md')){
- Copy-Item -LiteralPath (Join-Path $Root $name) -Destination (Join-Path $Stage $name) -Force
 }
 $components=@()
 foreach($library in $assets.libraries.PSObject.Properties){
@@ -79,14 +76,10 @@ if((Get-FileHash -LiteralPath (Join-Path $legal $boost.Archive) -Algorithm SHA25
 $sourceDir=Join-Path $Stage 'source'
 $snapshot=Join-Path (Split-Path $Stage -Parent) 'corresponding-source'
 New-Item -ItemType Directory -Path $sourceDir,$snapshot -Force|Out-Null
-$files=@()
-foreach($folder in @('src','tools','docs')){
- $files += Get-ChildItem -LiteralPath (Join-Path $Root $folder) -Recurse -File|Where-Object {
-  $_.FullName -notmatch '[\\/](bin|obj|__pycache__|node_modules)[\\/]' -and
-  $_.Name -notlike '*_wpftmp*' -and $_.FullName -notmatch '[\\/]tools[\\/]cloudsync[\\/]'
- }
-}
-foreach($name in @('LICENSE','LICENSING.md','THIRD-PARTY-NOTICES.md','README.md','CHANGELOG.md','.gitignore')){$files+=Get-Item -LiteralPath (Join-Path $Root $name)}
+# Only what builds and packs the executable: the program's source, these scripts, the licence texts and the build page.
+$files=@(Get-ChildItem -LiteralPath (Join-Path $Root 'src') -Recurse -File|Where-Object {$_.FullName -notmatch '[\\/](bin|obj)[\\/]' -and $_.Name -notlike '*_wpftmp*'})
+foreach($name in @('tools/package-release.ps1','tools/publish.ps1','tools/release-legal.ps1','tools/session-capabilities.ps1','tools/split-release.ps1',
+ 'LICENSE','LICENSING.md','THIRD-PARTY-NOTICES.md','README.md','.gitignore')){$files+=Get-Item -LiteralPath (Join-Path $Root $name)}
 $receipt=@()
 foreach($file in $files){
  $relative=[IO.Path]::GetRelativePath($Root,$file.FullName)
@@ -111,7 +104,7 @@ XEP base commit: $($Source.BaseCommit)
 Source fingerprint: $($Source.SourceSha256)
 SDK used: $sdk
 
-Extract XEP-source.zip to an empty directory. Copy the release's licenses folder
+Extract XEP-source.zip to an empty directory. Copy the release's XEnchantmentPatcher-docs/licenses folder
 beside its extracted src and tools folders. Install the .NET SDK named in global.json.
 Run dotnet restore src/XEnchantmentPatcher.csproj --locked-mode, then
 pwsh -File tools/publish.ps1 -Destination <new-directory>.

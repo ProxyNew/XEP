@@ -15,7 +15,7 @@ namespace XEnchantmentPatcher;
 // existing planners extend that choice as they extend any flat list.
 public static partial class PatcherEngine
 {
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
         // Bundle contents list -> authored slot item -> its slot choice.
         public Dictionary<FormKey, Dictionary<FormKey, FormKey>> BundleSlots { get; } = [];
@@ -130,7 +130,7 @@ public static partial class PatcherEngine
     // slot's additions join its slot choice, never the bundle: an existing choice (with the
     // copies' choices that mirror it), or a new one holding only its authored item plus what
     // it inherits from the original bundle's choice or passes on to its copies' choices.
-    private static bool SpecializedCanAdd(SpecializedRoute route, DirectPeerBudget budget, int count, Catalog catalog,
+    internal static bool SpecializedCanAdd(SpecializedRoute route, DirectPeerBudget budget, int count, Catalog catalog,
         out FormKey target, out int positions)
     {
         target = SpecializedFlatTarget(route, catalog);

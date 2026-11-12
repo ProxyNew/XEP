@@ -9,7 +9,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record CdfOutput(string RelativePath, string Json, IReadOnlySet<FormKey> Roots);
+    internal sealed record CdfOutput(string RelativePath, string Json, IReadOnlySet<FormKey> Roots);
     private static string CdfOutputPath(string requestedOutput) => "SKSE/Plugins/ContainerDistributionFramework/"
         + Path.GetFileNameWithoutExtension(requestedOutput) + ".CDF.json";
 

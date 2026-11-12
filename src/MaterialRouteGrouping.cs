@@ -46,7 +46,7 @@ public static partial class PatcherEngine
 
     // Interned semantic variants: each template maps once to an integer id, and ids map
     // back to the identity text used for coverage, plans and notes.
-    private sealed class MaterialVariantTable
+    internal sealed class MaterialVariantTable
     {
         private readonly Dictionary<EnchantedTemplate, int> templates = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<string, int> ids = new(StringComparer.Ordinal);
@@ -83,7 +83,7 @@ public static partial class PatcherEngine
     // Only used while grouping accepted, immutable routes. It replaces the old
     // joined string key, not the textual identities used for output allocation.
     // Without the proof it identifies a shape whose proof a later step supplies.
-    private sealed class MaterialRouteComparer(bool proof) : IEqualityComparer<SpecializedRoute>
+    internal sealed class MaterialRouteComparer(bool proof) : IEqualityComparer<SpecializedRoute>
     {
         public static readonly MaterialRouteComparer Instance = new(true);
         public static readonly MaterialRouteComparer WithoutProof = new(false);

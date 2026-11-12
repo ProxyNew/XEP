@@ -4,7 +4,7 @@
         Width="440" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <StackPanel Margin="20">
         <TextBlock x:Name="Explanation" TextWrapping="Wrap" Margin="0,0,0,14"/>
-        <StackPanel x:Name="NameFields">
+        <StackPanel>
             <TextBlock Text="Profile name" Margin="0,0,0,5"/>
             <TextBox x:Name="NameInput" MinHeight="28" AutomationProperties.Name="Profile name" ToolTip="Name this saved set of patching choices. Profile names must be unique."/>
         </StackPanel>

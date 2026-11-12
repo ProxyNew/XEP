@@ -150,7 +150,7 @@ public partial class ReviewWindow : Window
         PluginBatchResultText.Text = $"Applied {choice.Label} to {rows.Length} plugin{(rows.Length == 1 ? "" : "s")}.";
         PluginBatchResultText.Visibility = Visibility.Visible;
     }
-    private void PluginGridSorting(object sender, DataGridSortingEventArgs e)
+    internal void PluginGridSorting(object sender, DataGridSortingEventArgs e)
     {
         if (!e.Column.SortMemberPath.Equals(nameof(PluginDecision.Policy), StringComparison.Ordinal)) return;
         e.Handled = true;
@@ -233,5 +233,6 @@ public partial class ReviewWindow : Window
             SetSelectedEnchantments(EnchantmentBatchChoice.SelectedIndex switch { 0 => true, 1 => false, _ => (bool?)null });
     }
     private void RestoreEnchantmentDefaults(object sender, RoutedEventArgs e) => _host.SetEnchantments(_host.Enchantments, null);
+    private async void UpdateRows(object sender, RoutedEventArgs e) => await _host.FlushPendingScanAsync();
 }
 

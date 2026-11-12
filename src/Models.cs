@@ -4,25 +4,22 @@ using System.Text.Json.Serialization;
 
 namespace XEnchantmentPatcher;
 
-// Keep retired AllEligible (2) and CreateDistribution (4) values for old numeric
-// settings/callers only. SettingsStore migrates them to ExistingDistribution.
-public enum PatchPolicy { Review = 0, ExistingDistribution = 1, AllEligible = 2, Exclude = 3, CreateDistribution = 4 }
+// Settings store these numbers; 2 and 4 were retired policies.
+public enum PatchPolicy { Review = 0, ExistingDistribution = 1, Exclude = 3 }
 public sealed record PatchPolicyChoice(PatchPolicy Value, string Label)
 {
     public string Explanation => Value switch
     {
         PatchPolicy.Review => "Leave this plugin undecided. Choose Existing Distribution or Exclude for every plugin before generating a patch.",
         PatchPolicy.ExistingDistribution => "Select eligible equipment with existing loot distribution by default and show this plugin in equipment review. Individual equipment overrides and specialized distribution choices still apply; eligibility and placement safety checks remain enforced.",
-        PatchPolicy.Exclude => "Leave this plugin's equipment unselected by default and hide it from equipment review. Saved individual equipment inclusion overrides still apply.",
-        _ => "This legacy rule is migrated to Existing Distribution when settings are loaded."
+        _ => "Leave this plugin's equipment unselected by default and hide it from equipment review. Saved individual equipment inclusion overrides still apply."
     };
 }
 // Numeric value 3 used to mean the simultaneous union of source and general
 // routes. Reusing it for BestAvailable migrates existing numeric JSON to the
 // safer fallback behavior instead of silently retaining the broad union.
-// OtherMaterialLists (5) and RuntimeMirror (7) are retired choices kept only so old
-// numeric settings still decode; SettingsStore migrates them when settings are normalized.
-public enum SpecializedLootMode { Disabled = 0, SpecializedLists = 1, GeneralLists = 2, BestAvailable = 3, SpecializedEnchantedLists = 4, OtherMaterialLists = 5, MerchantFallback = 6, RuntimeMirror = 7, ScriptDistribution = 8 }
+// Settings store these numbers; 5 and 7 are retired and SettingsStore drops undefined values.
+public enum SpecializedLootMode { Disabled = 0, SpecializedLists = 1, GeneralLists = 2, BestAvailable = 3, SpecializedEnchantedLists = 4, MerchantFallback = 6, ScriptDistribution = 8 }
 public sealed record SpecializedLootChoice(SpecializedLootMode Value, string Label)
 {
     public string Explanation => CandidateItem.ExplainSpecializedChoice(Value);
@@ -51,7 +48,7 @@ public sealed record SpecializedDistributionChoice(SpecializedDistributionOption
 public static class SpecializedDistributionChoices
 {
     public static IReadOnlyList<SpecializedDistributionChoice> All { get; } = [
-        new(SpecializedDistributionOption.Off, "Off", "Adds no new loot distribution for this item. Its Include checkbox stays unchanged."),
+        new(SpecializedDistributionOption.Off, "Off", "Adds no new loot distribution for this item. Its Include choice is kept; an item with no base-item loot route shows unticked while Off."),
         new(SpecializedDistributionOption.OriginalLocations, "Original locations", "Uses supported enchanted lists or verified source insertions in the source mod's existing locations, under its conditions. New-material expansion requires the shared material option."),
         new(SpecializedDistributionOption.GeneralLoot, "General loot", "Allows compatible general enchanted loot, including merchant loot lists, even where the ordinary item is not found. Requires an individual choice or a mod-author rule.")];
     // Broadening general loot still requires an explicit individual choice.
@@ -166,14 +163,13 @@ public sealed class CandidateItem : INotifyPropertyChanged
     public string LastPreviewSummary { get => _lastPreviewSummary; set { if (_lastPreviewSummary == value) return; _lastPreviewSummary = value; OnPropertyChanged(); OnPropertyChanged(nameof(SpecializedDecisionSummary)); OnPropertyChanged(nameof(SelectionEvidence)); } }
     internal static string ExplainSpecializedChoice(SpecializedLootMode mode) => mode switch
     {
-        SpecializedLootMode.Disabled => "Adds no new loot distribution for this item. Its Include checkbox stays unchanged.",
+        SpecializedLootMode.Disabled => "Adds no new loot distribution for this item. Its Include choice is kept; an item with no base-item loot route shows unticked while Off.",
         SpecializedLootMode.ScriptDistribution => "Places enchanted counterparts through the specialized and material planners wherever the source mod's script inserts the item, under the same consumers, gates and level windows. One owned switch per block of script insertions opens only while that block's last insertion is present in its list, so counterparts follow the script's current result.",
         SpecializedLootMode.SpecializedEnchantedLists => "Uses only verified enchanted lists reached by the item's specialized consumer context. Material expansion is used only when its shared option is enabled.",
         SpecializedLootMode.SpecializedLists => "Adds an enchanted pool beside the ordinary item in supported source lists. This intentionally mixes ordinary and enchanted selection and changes that list's share.",
         SpecializedLootMode.BestAvailable => "Tries verified specialized enchanted lists, then supported source lists, then general enchanted loot, stopping after the first productive route family.",
         SpecializedLootMode.MerchantFallback => "Creates occasional enchanted stock at merchants whose record-defined buy/sell filters accept the item. Proven globals and chance controls are retained; quest unlocks and ambiguous source paths stay blocked.",
         SpecializedLootMode.GeneralLists => "Allows compatible general enchanted loot, including merchant loot lists, even where the ordinary item is not found. Requires an individual choice or a mod-author rule.",
-        SpecializedLootMode.OtherMaterialLists => "Legacy material-expansion choice; saved profiles migrate it to Specialized enchanted lists only plus the shared material-expansion setting.",
         _ => "No explanation is available."
     };
     private string OriginalLocationsUnavailableReason => "Original locations unavailable: " + (!Eligible
@@ -337,27 +333,14 @@ public sealed class ProfileSettings
     public HashSet<string> IgnoredAuthorDestinationLists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     // Run-only: per-item allowed destinations (original leveled lists or containers).
     internal Dictionary<string, string[]> AuthorDestinationLists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    private List<string> providerPlugins = [];
-    public List<string> EnchantmentProviderPlugins
-    {
-        get => providerPlugins;
-        set { providerPlugins = value; UseLoadOrderProviderDefaults ??= false; }
-    }
-    // Null distinguishes untouched/legacy profiles until normalization; an explicit
-    // list, including an empty list, is a saved choice unless automatic mode is stored.
-    public bool? UseLoadOrderProviderDefaults { get; set; }
+    public List<string> EnchantmentProviderPlugins { get; set; } = [];
+    // Off: the list above, even an empty one, is a saved choice; on: discovery replaces it.
+    public bool UseLoadOrderProviderDefaults { get; set; } = true;
     public List<string> EnchantmentProviderOrder { get; set; } = [];
-    [JsonPropertyName("DistributionProviderPlugins")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public List<string>? LegacyDistributionProviderPlugins { get; set; }
-    public bool ProviderOrderMigrated { get; set; }
-    [JsonPropertyName("EnchantmentProviderPlugin")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? LegacyEnchantmentProviderPlugin { get; set; }
+    // Always written as true and never read: a build from before the provider-order migration was
+    // removed reverses a manual provider list when this key is absent, and saves the reversed list.
+    public bool ProviderOrderMigrated => true;
     public DistributionTarget DistributionTarget { get; set; } = DistributionTarget.MatchingProviderLists;
-    // Retained in serialized profiles for backward compatibility. Normalization
-    // forces this on; subtype recognition is now an invariant rather than a setting.
-    public bool StrictSubtypeMatching { get; set; } = true;
     public bool BroadUnmatchedDistribution { get; set; }
     public bool ResolveLeveledListConflicts { get; set; }
     public bool KeepUndistributedVariants { get; set; }
@@ -373,16 +356,8 @@ public sealed class AppSettings
     public bool DarkTheme { get; set; }
     public string? DataFolder { get; set; }
     public string? OutputFolder { get; set; }
-    [JsonPropertyName("OutputPath")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? LegacyOutputPath { get; set; }
-    [JsonPropertyName("ThaumaturgyPlugin")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? LegacyProviderPlugin { get; set; }
     public string ProfileName { get; set; } = "Default";
     public Dictionary<string, ProfileSettings> Profiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, PatchPolicy> Policies { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public HashSet<string> ItemExclusions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     [JsonIgnore] public ProfileSettings CurrentProfile => Profiles[ProfileName];
     // Session-only opt-in: Scan reads the mod-author rules file. The UI sets it;
     // CLI runs and fixtures leave it off and ignore the file.
@@ -465,7 +440,6 @@ public sealed class GenerationPreview
     public int UndistributedVariants { get; init; }
     public int FallbackSublists { get; init; }
     public List<string> FallbackConnections { get; init; } = [];
-    public bool StrictSubtypeMatching { get; init; }
     public bool BroadUnmatchedDistribution { get; init; }
     public bool ResolveLeveledListConflicts { get; init; }
     public bool KeepUndistributedVariants { get; init; }
@@ -542,7 +516,6 @@ public sealed class PatchReport
     public int FallbackSublists { get; init; }
     // Written in the report file's compact sections (see ReportWriting.cs), not here.
     [JsonIgnore] public List<FallbackPlacement> FallbackPlacements { get; init; } = [];
-    public bool StrictSubtypeMatching { get; init; }
     public bool BroadUnmatchedDistribution { get; init; }
     public bool ResolveLeveledListConflicts { get; init; }
     public bool KeepUndistributedVariants { get; init; }
@@ -574,8 +547,7 @@ public sealed class PatchReport
 
 // What a bug report needs to describe the user's setup: the generating profile, the effective
 // plugin policies and the active load order. Machine paths are deliberately left out.
-public sealed record ReportSetup(string ProfileName, ProfileSettings Profile, Dictionary<string, PatchPolicy> Policies,
-    List<string> ItemExclusions, List<string> LoadOrder);
+public sealed record ReportSetup(string ProfileName, ProfileSettings Profile, Dictionary<string, PatchPolicy> Policies, List<string> LoadOrder);
 
 public sealed class OutputManifest
 {

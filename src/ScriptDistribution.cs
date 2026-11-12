@@ -19,7 +19,7 @@ public static partial class PatcherEngine
 {
     private static readonly ModKey ScriptGatePlanningMod = ModKey.FromFileName("__XEP_ScriptGatePlanning.esp");
 
-    private sealed record ScriptSite(string Instance, string Function, FormKey Receiver, FormKey Payload,
+    internal sealed record ScriptSite(string Instance, string Function, FormKey Receiver, FormKey Payload,
         short Level, short Count, int Position, string Block, bool InLoop, string Evidence, string ReceiverProperty, string PayloadProperty)
     {
         public MirrorSite Mirror => new(Receiver, Payload, Level, Count, Evidence);
@@ -27,13 +27,13 @@ public static partial class PatcherEngine
     // Members run together with Representative; its presence in Representative.Receiver
     // proves the whole block ran after the receivers' last reset. The gate refreshes on
     // the owning function's completion event and on every subscribed resetter's event.
-    private sealed record ScriptGate(string Block, FormKey Placeholder, ScriptSite Representative, ScriptSite[] Members, string[] CompletionEvents, string[] Warnings);
-    private sealed record ScriptReset(string Instance, string Function, FormKey Receiver, int Position, string Method, FormKey[] Owners);
+    internal sealed record ScriptGate(string Block, FormKey Placeholder, ScriptSite Representative, ScriptSite[] Members, string[] CompletionEvents, string[] Warnings);
+    internal sealed record ScriptReset(string Instance, string Function, FormKey Receiver, int Position, string Method, FormKey[] Owners);
     private sealed record ScriptSiteVerdict(string? Problem, string[] Warnings, string[] Events);
 
     // One pass owns the accepted gates and the frozen evidence graph. A new gate
     // selection or graph replaces the index; a different source has its own chains.
-    private sealed class ScriptChainIndex
+    internal sealed class ScriptChainIndex
     {
         public readonly ScriptGate[] Gates;
         public readonly SpecializedEvidence Graph;
@@ -50,7 +50,7 @@ public static partial class PatcherEngine
 
     // Every literal insertion site, independent of the selection. Gates copy the
     // collections they extend.
-    private sealed record ScriptSiteScan(ScriptSite[] Sites, ScriptReset[] Reverts, HashSet<FormKey> UnresolvedTargets,
+    internal sealed record ScriptSiteScan(ScriptSite[] Sites, ScriptReset[] Reverts, HashSet<FormKey> UnresolvedTargets,
         HashSet<string> UntrustedInstances, Dictionary<FormKey, HashSet<FormKey>> Reached, int Instances);
 
     // The selected source items decide which mods are patched (ADR 0008): their own mods
@@ -209,7 +209,7 @@ public static partial class PatcherEngine
         return lists;
     }
 
-    private static ScriptGate[] ScriptDistributionGates(Catalog catalog)
+    internal static ScriptGate[] ScriptDistributionGates(Catalog catalog)
     {
         if (catalog.ScriptGates is { } built)
         {
@@ -450,17 +450,14 @@ public static partial class PatcherEngine
             if (!graph.Lists.TryGetValue(key, out var list)) return;
             if ((list.Entries ?? []).Any(e => e.Data is { Level: < 0 })) { problem = "payload level outside the signed static range"; return; }
             var next = lists.Append(key).ToList();
-            var highestOnly = HasHighestEligibleCutoff(list);
-            if (highestOnly && catalog.ScriptUnresolvedReceivers.Contains(key) && graph.Up(source).Contains(key))
+            if (HasHighestEligibleCutoff(list) && catalog.ScriptUnresolvedReceivers.Contains(key) && graph.Up(source).Contains(key))
             { problem = "highest-eligible payload path has an insertion with unknown level"; return; }
             foreach (var entry in list.Entries ?? [])
                 if (entry.Data is { } data)
                 {
                     var start = Math.Max(minimum, SelectionEntryMinimum(list, data.Level));
                     // E4: a script-changed list's possible insertions also cut off lower entries.
-                    var end = highestOnly ? Math.Min(maximum, (list.Entries ?? []).Where(e => e.Data is { } d && d.Level > data.Level)
-                        .Select(e => (int)e.Data!.Level - 1).Concat(catalog.ScriptReceiverLevels.GetValueOrDefault(key, [])
-                            .Where(l => l > data.Level).Select(l => (int)l - 1)).DefaultIfEmpty(65535).Min()) : maximum;
+                    var end = Math.Min(maximum, SelectionEntryMaximum(list, data.Level, catalog.ScriptReceiverLevels.GetValueOrDefault(key, [])));
                     Visit(data.Reference.FormKey, next, depth + 1, start, end);
                 }
         }
@@ -569,15 +566,11 @@ public static partial class PatcherEngine
                 string? windowProblem = null;
                 foreach (var (_, member) in chain)
                 {
-                    var band = (Minimum: (int)SelectionEntryMinimum(graph.Lists[member.Receiver], member.Level), Maximum: 65535);
-                    if (HasHighestEligibleCutoff(graph.Lists[member.Receiver]))
-                    {
-                        if (catalog.ScriptUnresolvedReceivers.Contains(member.Receiver)) { windowProblem = "highest-eligible receiver has an insertion with unknown level"; break; }
-                        var higher = (graph.Lists[member.Receiver].Entries ?? []).Where(e => e.Data is not null).Select(e => (int)unchecked((ushort)e.Data!.Level))
-                            .Concat(catalog.ScriptReceiverLevels.GetValueOrDefault(member.Receiver, []).Select(l => (int)l)).Where(l => l > member.Level);
-                        band.Maximum = Math.Min(65535, higher.DefaultIfEmpty(65536).Min() - 1);
-                    }
-                    receiverWindow = IntersectBands(receiverWindow, [band]);
+                    var receiver = graph.Lists[member.Receiver];
+                    if (HasHighestEligibleCutoff(receiver) && catalog.ScriptUnresolvedReceivers.Contains(member.Receiver))
+                    { windowProblem = "highest-eligible receiver has an insertion with unknown level"; break; }
+                    receiverWindow = IntersectBands(receiverWindow, [(SelectionEntryMinimum(receiver, member.Level),
+                        SelectionEntryMaximum(receiver, member.Level, catalog.ScriptReceiverLevels.GetValueOrDefault(member.Receiver, [])))]);
                 }
                 if (windowProblem is not null) { refusals.Add($"{label}: {windowProblem}"); continue; }
                 // Controls on the static path to each bag, the bag's own control, then the
@@ -685,9 +678,9 @@ public static partial class PatcherEngine
     // family list per destination entry, so the existing peer branch keeps its shape and the
     // counterpart carries the source's controls. New attachments have independent source
     // proofs: covering a destination under one block's gate does not cover it under another's.
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
-        public Dictionary<string, FormKey> AvailabilityFamilies { get; } = new(StringComparer.Ordinal);
+        public Dictionary<(bool Script, FormKey Source, FormKey List, short Level, FormKey Slot, bool LevelOnEdge, string Proof, string Variant), FormKey> AvailabilityFamilies { get; } = [];
         public HashSet<(FormKey Family, FormKey Target, short Level, short Count)> AttachedAvailabilityFamilies { get; } = [];
     }
 
@@ -760,23 +753,22 @@ public static partial class PatcherEngine
         if (routes.Count == 0) return 0;
         var budget = DirectPeerBudget.ForPlanning(catalog);
         var inventory = catalog.SourceEquipment!.GetValueOrDefault(key, []);
-        int Rank(SpecializedRoute r) { var i = profile.EnchantmentProviderPlugins.FindIndex(p => p.Equals(r.Template.Enchantment.ModKey.FileName.String, StringComparison.OrdinalIgnoreCase)); return i < 0 ? int.MaxValue : i; }
+        // This source's plans before this call; a plan added below matches only its own group.
+        VariantPlan[] sourcePlans = observedSource ? [] : plans.Where(p => p.Source.FormKey == key).ToArray();
         foreach (var group in routes.GroupBy(r => VariantIdentity(r.Template.Item, r.Template.Enchantment, catalog)).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
-            var ordered = group.OrderBy(Rank).ThenBy(r => r.Template.Item.FormKey).Select(r => WithoutSharedSlotGates(r, key, catalog, observedSource)).OfType<SpecializedRoute>().ToArray();
+            var ordered = group.OrderBy(r => ProviderRank(profile, r.Template.Enchantment.ModKey)).ThenBy(r => r.Template.Item.FormKey).Select(r => WithoutSharedSlotGates(r, key, catalog, observedSource)).OfType<SpecializedRoute>().ToArray();
             if (ordered.Length == 0) continue;
             var existing = inventory.Where(i => OrdinaryEquipment(i, catalog.KeywordNames) && TryEnchantment(i, out var e) && VariantIdentity(i, e, catalog) == group.Key).ToArray();
             var occupied = existing.SelectMany(i => CdfCoveredAncestors(i.FormKey, PlannedLootAncestors(i.FormKey, catalog), catalog)).Select(k => (k, "")).ToHashSet();
             var authoredOccupied = occupied.ToHashSet();
             if (ordered.Any(r => r.RecipientIsolation is not null))
                 authoredOccupied.UnionWith(CdfLootRecipientCoverage(existing.Select(i => i.FormKey), catalog));
-            if (!observedSource)
-                occupied.UnionWith(plans.Where(p => p.Source.FormKey == key && VariantIdentity(p.Template.Item, p.Template.Enchantment, catalog) == group.Key)
-                    .SelectMany(p => p.Parents).SelectMany(p => PlannedLootAncestors(p.List, catalog)).Select(k => (k, "")));
+            var planned = sourcePlans.Where(p => VariantIdentity(p.Template.Item, p.Template.Enchantment, catalog) == group.Key)
+                .SelectMany(p => p.Parents).Select(p => p.List).ToArray();
+            occupied.UnionWith(planned.SelectMany(l => PlannedLootAncestors(l, catalog)).Select(k => (k, "")));
             if (ordered.Any(r => r.RecipientIsolation is not null))
-                occupied.UnionWith(CdfLootRecipientCoverage(existing.Select(i => i.FormKey).Concat(!observedSource
-                    ? plans.Where(p => p.Source.FormKey == key && VariantIdentity(p.Template.Item, p.Template.Enchantment, catalog) == group.Key)
-                        .SelectMany(p => p.Parents).Select(p => p.List) : []), catalog));
+                occupied.UnionWith(CdfLootRecipientCoverage(existing.Select(i => i.FormKey).Concat(planned), catalog));
             var parents = new List<ParentEntry>();
             var parentTemplates = new Dictionary<FormKey, EnchantedTemplate>();
             // Static routes only: loot ancestors already covered under each control set, keyed by
@@ -822,17 +814,20 @@ public static partial class PatcherEngine
                 // minimum on the variant entry, where raising an edge would change siblings.
                 var levelOnEdge = ((int)catalog.Lists[target].Flags & 1) != 0;
                 var edgeLevel = levelOnEdge ? Math.Max(route.Destination.Level, route.SourceProof!.Level) : route.Destination.Level;
-                var familyIdentity = $"{(observedSource ? "script-family" : "availability-family")}|{key}|{route.Destination.List}|{route.Destination.Level}|"
-                    + (route.Slot.IsNull ? "" : $"slot:{route.Slot}|")
-                    + $"{(levelOnEdge ? "minimum-on-edge|" + route.SourceProof!.ControlIdentity : route.SourceProof!.Identity)}|{group.Key}";
-                if (!catalog.AvailabilityFamilies.TryGetValue(familyIdentity, out var family) || !catalog.Fallbacks.ContainsKey(family))
+                // Looked up by the parts of its identity text; the text is built only for a new family.
+                var familyKey = (observedSource, key, route.Destination.List, route.Destination.Level, route.Slot, levelOnEdge,
+                    levelOnEdge ? route.SourceProof!.ControlIdentity : route.SourceProof!.Identity, group.Key);
+                if (!catalog.AvailabilityFamilies.TryGetValue(familyKey, out var family) || !catalog.Fallbacks.ContainsKey(family))
                 {
+                    var familyIdentity = $"{(observedSource ? "script-family" : "availability-family")}|{key}|{route.Destination.List}|{route.Destination.Level}|"
+                        + (route.Slot.IsNull ? "" : $"slot:{route.Slot}|")
+                        + $"{(levelOnEdge ? "minimum-on-edge|" + route.SourceProof!.ControlIdentity : route.SourceProof!.Identity)}|{group.Key}";
                     family = new FormKey(FallbackPlanningMod, (uint)(catalog.Fallbacks.Count + 1));
                     var list = new LeveledItem(family, SkyrimRelease.SkyrimSE)
                     { EditorID = $"Variants_{DisplayName(source)}_{(observedSource ? "script" : "availability")}", Flags = (LeveledItem.Flag)3, ChanceNone = new Percent(0), Entries = new() };
                     catalog.AddList(family, list);
                     catalog.Fallbacks.Add(family, new(familyIdentity, candidate.Category, list));
-                    catalog.AvailabilityFamilies[familyIdentity] = family;
+                    catalog.AvailabilityFamilies[familyKey] = family;
                 }
                 if (catalog.AttachedAvailabilityFamilies.Add((family, target, edgeLevel, route.Destination.Count)))
                 {

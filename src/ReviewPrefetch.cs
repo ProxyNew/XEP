@@ -76,46 +76,6 @@ public static partial class PatcherEngine
     //   (checked when the review uses a result). Other proofs defer the item.
     private sealed record PrefetchedReview(Dictionary<FormKey, List<string>> Notes, RuntimeListRootHolderInputs Inputs);
 
-    // A prefetched item's assessments, notes and merchant-route entries, reused by a later
-    // review of the same load-order analysis and material/origin set when the item's
-    // review inputs are unchanged. Those inputs (Fingerprint) are the enabled templates
-    // of the item's shape that its author enchantment list allows, and its author
-    // destination list; everything else the assessment reads is load-order or material
-    // state shared by the whole cache, or script analysis carried by AdoptScriptAnalysis.
-    private sealed class ReviewAssessmentCache
-    {
-        public sealed record Entry(string Fingerprint, SpecializedAssessment Base, SpecializedAssessment Expanded, List<string> Notes,
-            List<MerchantSourceRoute>? Exact, (List<MerchantSourceRoute> Routes, string[] Evidence)? Structured);
-        public Dictionary<FormKey, Entry> Entries { get; } = [];
-        public int Reused { get; set; }
-    }
-
-    private static SpecializedAssessment CopyAssessment(SpecializedAssessment source)
-        => new(source.Routes.ToList(), source.Evidence.ToList()) { Stage = source.Stage, Refusals = source.Refusals.ToList() };
-
-    // Specialized routes search the item's whole specialized group (for example one-handed
-    // swords, war axes and maces together, of any material when expanding), and counted
-    // merchant routes a subset of it. Evidence distinguishes disabled templates from ones the
-    // author list disallows, so the enabled set and the author lists are keyed separately.
-    private static Func<FormKey, string> AssessmentFingerprints(Catalog catalog)
-    {
-        var byGroup = catalog.Templates.GroupBy(t => SpecializedGroup(t.Class)).ToDictionary(g => g.Key,
-            g => string.Join("|", g.Select(t => t.Item.FormKey.ToString() + "/" + t.Enchantment).Order(StringComparer.Ordinal)));
-        static string Keys(IEnumerable<FormKey> keys) => string.Join(",", keys.Select(k => k.ToString()).Order(StringComparer.Ordinal));
-        // Source proofs read script receiver state: gate-free, or with the effects of gates
-        // built for the patched-mod set (load order fixed per cache).
-        var receivers = catalog.ScriptGates is not null && catalog.AdoptedGateReceivers is null && catalog.PatchedMods is { } patched
-            ? string.Join(",", patched.Select(m => m.FileName.String).Order(StringComparer.OrdinalIgnoreCase)) : "-";
-        return key =>
-        {
-            IMajorRecordGetter? record = catalog.Weapons.GetValueOrDefault(key) ?? (IMajorRecordGetter?)catalog.Armors.GetValueOrDefault(key);
-            var cls = record is null ? null : CachedClass(record, catalog);
-            var templates = cls is null ? "-" : byGroup.GetValueOrDefault(SpecializedGroup(cls), "");
-            var enchantments = catalog.SourceEnchantmentAllow.TryGetValue(key, out var allowList) ? Keys(allowList) : "-";
-            var destinations = catalog.SourceDestinationAllow.TryGetValue(key, out var places) ? Keys(places) : "-";
-            return templates + "#" + enchantments + "#" + destinations + "#" + receivers;
-        };
-    }
     private static PrefetchedReview PrefetchSpecializedAssessments(List<CandidateItem> candidates, Catalog catalog,
         ProfileSettings profile, AccessIndex index, HashSet<FormKey> consumers)
     {
@@ -143,31 +103,13 @@ public static partial class PatcherEngine
         var exactBefore = catalog.MerchantExactSourceRoutes.Keys.ToHashSet();
         var structuredBefore = catalog.MerchantStructuredSourceRoutes.Keys.ToHashSet();
         var results = new (SpecializedAssessment Base, SpecializedAssessment Expanded, List<string> Notes)?[keys.Count];
-        // Items whose review inputs match a cached entry are not assessed again.
-        var reuse = catalog.AssessmentReuse;
-        var fingerprint = reuse is null ? null : AssessmentFingerprints(catalog);
-        var prints = new string?[keys.Count];
-        var compute = new List<int>();
-        for (var i = 0; i < keys.Count; i++)
-        {
-            prints[i] = fingerprint?.Invoke(keys[i]);
-            if (reuse is not null && reuse.Entries.TryGetValue(keys[i], out var entry) && entry.Fingerprint == prints[i])
-            {
-                results[i] = (CopyAssessment(entry.Base), CopyAssessment(entry.Expanded), entry.Notes.ToList());
-                if (entry.Exact is { } exact) catalog.MerchantExactSourceRoutes[keys[i]] = exact.ToList();
-                if (entry.Structured is { } structured) catalog.MerchantStructuredSourceRoutes[keys[i]] = (structured.Routes.ToList(), structured.Evidence);
-                reuse.Reused++;
-            }
-            else compute.Add(i);
-        }
         var next = -1; var deferred = 0;
         Exception? failure = null;
         using (PhaseTiming.Detach())
             Parallel.For(0, workers, new ParallelOptions { MaxDegreeOfParallelism = workers }, _ =>
             {
-                for (var n = Interlocked.Increment(ref next); n < compute.Count && Volatile.Read(ref failure) is null; n = Interlocked.Increment(ref next))
+                for (var i = Interlocked.Increment(ref next); i < keys.Count && Volatile.Read(ref failure) is null; i = Interlocked.Increment(ref next))
                 {
-                    var i = compute[n];
                     var buffer = ReviewPrefetch.Notes = [];
                     try { results[i] = (AssessSpecializedRoutes(keys[i], catalog, false), AssessSpecializedRoutes(keys[i], catalog, true), buffer); }
                     catch (ReviewPrefetchDeferred) { Interlocked.Increment(ref deferred); }
@@ -184,10 +126,6 @@ public static partial class PatcherEngine
                 graph.Assessments[keys[i]] = result.Base;
                 graph.ExpandedAssessments[keys[i]] = result.Expanded;
                 notes[keys[i]] = result.Notes;
-                if (reuse is not null && prints[i] is { } print)
-                    reuse.Entries[keys[i]] = new(print, CopyAssessment(result.Base), CopyAssessment(result.Expanded), result.Notes.ToList(),
-                        catalog.MerchantExactSourceRoutes.TryGetValue(keys[i], out var exact) ? exact.ToList() : null,
-                        catalog.MerchantStructuredSourceRoutes.TryGetValue(keys[i], out var structured) ? (structured.Routes.ToList(), structured.Evidence) : null);
                 continue;
             }
             if (!exactBefore.Contains(keys[i])) catalog.MerchantExactSourceRoutes.Remove(keys[i]);

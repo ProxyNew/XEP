@@ -23,20 +23,20 @@ public static partial class PatcherEngine
     {
         // A form-filter entry: a resolved form of a whitelisted type, a plugin name, or an ALL
         // entry SPID can never match (resolved-unmatchable).
-        private sealed record Entry(string Type, FormKey Key, string Plugin);
+        internal sealed record Entry(string Type, FormKey Key, string Plugin);
         // One rule's offline-evaluable filters (strings, forms, traits), shared by item rules and
         // by the outfit candidates that compete for native outfit selection.
-        private sealed record Filters(Entry[] Match, Entry[] Not, Entry[] All, SpidStringFilters? Strings, SpidTraits? Traits, SpidLevels? Levels);
+        internal sealed record Filters(Entry[] Match, Entry[] Not, Entry[] All, SpidStringFilters? Strings, SpidTraits? Traits, SpidLevels? Levels);
         // Chanced: a roll below 100 may withhold the payload. By maintainer decision (ticket 11) any chance
         // above 0 counts as received: the receipt is a consumer and evidence.
-        private sealed record ItemRule(Filters Filters, FormKey Payload, bool Outfit, bool Sleep, bool Death, int Index, bool Chanced);
-        private readonly List<ItemRule> rules = [];
+        internal sealed record ItemRule(Filters Filters, FormKey Payload, bool Outfit, bool Sleep, bool Death, int Index, bool Chanced);
+        internal readonly List<ItemRule> rules = [];
         // One live default-parser Outfit or SleepOutfit rule competing in native selection, equipment
         // or not (an empty outfit still replaces). Null filters: recipients not evaluable, it may
         // match anyone. Chanced: its roll may fail, and native selection then tries the next one.
         // DirectArmor: SPID's race check on direct ARMO entries may reject it (next one tried).
         // Index links a candidate to its modelled rule, if any.
-        private sealed record OutfitCandidate(Filters? Filters, FormKey Outfit, bool Chanced, bool DirectArmor, int Index, bool Final, bool LevelFiltered);
+        internal sealed record OutfitCandidate(Filters? Filters, FormKey Outfit, bool Chanced, bool DirectArmor, int Index, bool Final, bool LevelFiltered);
         // In native selection order: typed lines before generic Form lines, then parse order.
         private readonly List<OutfitCandidate> outfitCandidates = [];
         private readonly List<OutfitCandidate> sleepCandidates = [];
@@ -311,7 +311,7 @@ public static partial class PatcherEngine
 
         // The NPC record that supplies one template-inheritable field: follows the template while
         // the field is inherited; a leveled or missing template leaves it undecided (null).
-        private INpcGetter? Source(INpcGetter npc, NpcConfiguration.TemplateFlag field)
+        internal INpcGetter? Source(INpcGetter npc, NpcConfiguration.TemplateFlag field)
         {
             var seen = new HashSet<FormKey>();
             var current = npc;
@@ -328,7 +328,7 @@ public static partial class PatcherEngine
 
         // Facts of one NPC branch, as native filters read them (base record, branch-resolved traits,
         // factions and inventory). Null members are facts the branch did not resolve.
-        private sealed class View(SpidRecipients owner, INpcGetter npc, INpcGetter? traits, INpcGetter? factions, INpcGetter? inventory)
+        internal sealed class View(SpidRecipients owner, INpcGetter npc, INpcGetter? traits, INpcGetter? factions, INpcGetter? inventory)
         {
             private readonly Lazy<string?> name = new(() => owner.Source(npc, NpcConfiguration.TemplateFlag.BaseData) is { } s ? s.Name?.String ?? "" : null);
             private readonly Lazy<string[]?> keywords = new(() =>
@@ -380,12 +380,12 @@ public static partial class PatcherEngine
             return undecided ? null : true;
         }
 
-        private bool? Identity(View view, FormKey key)
+        internal bool? Identity(View view, FormKey key)
             => key == view.Template && !key.IsNull ? true
                 : key == view.Npc.FormKey ? (view.OwnIdentityUndecided ? null : true)
                 : view.TemplateLeveled ? null : false;
 
-        private bool? Form(View view, Entry entry, HashSet<FormKey> visiting)
+        internal bool? Form(View view, Entry entry, HashSet<FormKey> visiting)
         {
             switch (entry.Type)
             {
@@ -458,7 +458,7 @@ public static partial class PatcherEngine
             var undecided = keywordDistributor;
             foreach (var name in KeywordsMatching(term, partial))
             {
-                var distributed = SeenKeyword(view, name, term, partial);
+                var distributed = SeenKeyword(view, name);
                 if (distributed == true) return true;
                 undecided |= distributed is null || view.KeywordsInherited;
             }
@@ -477,7 +477,7 @@ public static partial class PatcherEngine
         // a rule after a keyword it tests exactly (case-sensitive, MATCH/NOT/ALL; ANY links only its
         // first match), and a cycle member sees fellow members undecided. Otherwise the order is not
         // guaranteed, so only a certain miss is decided.
-        private bool? SeenKeyword(View view, string name, string term, bool partial)
+        private bool? SeenKeyword(View view, string name)
         {
             if (view.CurrentKeyword is not { } current) return DistributedKeyword(view, name);
             if (keywordCycle.TryGetValue(current, out var a) && keywordCycle.TryGetValue(name, out var b) && a == b) return null;
@@ -647,7 +647,7 @@ public static partial class PatcherEngine
             return AllOf(parts);
         }
 
-        private sealed record Selection(OutfitCandidate? Winner, List<OutfitCandidate> Possible, bool Undecided)
+        internal sealed record Selection(OutfitCandidate? Winner, List<OutfitCandidate> Possible, bool Undecided)
         {
             public bool Receives(ItemRule rule) => Winner?.Index == rule.Index || Possible.Any(p => p.Index == rule.Index);
         }
@@ -657,7 +657,7 @@ public static partial class PatcherEngine
         // set on the base: a candidate equal to the current sleeping outfit is skipped, and no race
         // check applies. A candidate whose roll may fail is a possible receipt and the walk goes on;
         // the first certain one wins and stops it. Any undecided match leaves the rest undecided.
-        private Selection Select(View view, bool sleep)
+        internal Selection Select(View view, bool sleep)
         {
             var outer = view.AfterSkins; view.AfterSkins = true;
             try { return SelectAfterSkins(view, sleep); }
@@ -677,7 +677,7 @@ public static partial class PatcherEngine
                 if (match == false) continue;
                 if (match is null || !sleep && candidate.DirectArmor) return new(null, possible, true);
                 // A received outfit (chanced or not) that a level-up re-pass may replace is no evidence.
-                if (Repass(view, candidate, sleep, possible)) return new(null, possible, true);
+                if (Repass(view, candidate, sleep)) return new(null, possible, true);
                 if (candidate.Chanced) { possible.Add(candidate); continue; }
                 return new(candidate, possible, false);
             }
@@ -685,11 +685,12 @@ public static partial class PatcherEngine
         }
 
         // A player level-up re-runs only level-filtered candidates (first valid wins again).
-        // Default outfits: a level-filtered winner wins again (earlier ones still fail); a later, or
-        // an earlier chanced, level-filtered candidate with another outfit that may match can
-        // overwrite a non-Final other winner. Sleep outfits: the winner is now current and skipped,
-        // so any other level-filtered candidate with another outfit may replace it.
-        private bool Repass(View view, OutfitCandidate candidate, bool sleep, List<OutfitCandidate> earlierChanced)
+        // Default outfits: a level-filtered winner wins again (earlier ones still fail,
+        // a chanced one by its cached roll); a later level-filtered candidate with another outfit
+        // that may match can overwrite a non-Final other winner. Sleep outfits: the winner is now
+        // current and skipped, so any other level-filtered candidate with another outfit may replace it
+        // (an earlier chanced one only when it was skipped as the current outfit).
+        private bool Repass(View view, OutfitCandidate candidate, bool sleep)
         {
             // A Final default outfit is protected; a level-filtered non-chanced winner wins again
             // (a chanced one re-rolls on the re-pass and may fail).

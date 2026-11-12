@@ -24,7 +24,7 @@ public static partial class PatcherEngine
     // Like SkyPatcherLists, this is an analytical overlay: decisions read the
     // effective lists, while written records keep the physical baseline so LLOS
     // applies each change exactly once in game.
-    private sealed class LlosLists
+    internal sealed class LlosLists
     {
         // One batch rule (Manager::ProcessBatchProtocol) on a matched target entry.
         // Once-per-list protocols (0–3, 100–104) fire at the first matching entry;
@@ -154,11 +154,7 @@ public static partial class PatcherEngine
         // Lists LLOS creates at startup (protocol 170): analytical nodes under a
         // planning ModKey. They are never written; Locations name their rules.
         public static readonly ModKey GeneratedMod = ModKey.FromFileName("__XEP_LlosGenerated.esp");
-        internal sealed record GeneratedGroup(string Identity, FormKey Target, bool Keyword, int Instruction, List<string> Locations, ushort Protocol = 170)
-        {
-            // Protocol 450 lists replace outfit entries; they are never in leveled lists.
-            public bool Outfit => Protocol == 450;
-        }
+        internal sealed record GeneratedGroup(string Identity, FormKey Target, bool Keyword, int Instruction, List<string> Locations, ushort Protocol = 170);
         // Outfit entries LLOS swaps for an outfit-domain generated list (protocol 450).
         private readonly Dictionary<FormKey, FormKey> outfitSwaps = [];
         // Generated groups with an unsupported rule are never built; outfits holding a
@@ -171,15 +167,12 @@ public static partial class PatcherEngine
         private readonly HashSet<FormKey> withheldOutfitPayloads = [];
         public IReadOnlyCollection<FormKey> WithheldOutfitPayloads => withheldOutfitPayloads;
         public FormKey? OutfitSwap(FormKey item) => outfitSwaps.TryGetValue(item, out var list) ? list : null;
-        // The physical target an outfit-domain generated list replaces (written outfits keep it).
-        public FormKey? OutfitTarget(FormKey list) => generated.GetValueOrDefault(list) is { Outfit: true } group ? group.Target : null;
         // Container and NPC-inventory entries LLOS swaps (protocol 750). Native
         // ProcessBatchContainerLite edits only records with fewer than 64 entries and
         // keeps each entry's count and owner.
         public const int ContainerSwapLimit = 64;
         private readonly Dictionary<FormKey, FormKey> containerSwaps = [];
         public FormKey? ContainerSwap(FormKey item) => containerSwaps.TryGetValue(item, out var list) ? list : null;
-        public bool HasContainerSwaps => containerSwaps.Count > 0;
         // Written containers and NPCs keep the physical target; LLOS swaps it at startup.
         // Withheld 750 targets: their entries are blanked in effective small records, as
         // native LLOS replaces them with a list XEP does not model.
@@ -812,7 +805,7 @@ public static partial class PatcherEngine
             return Math.Max(0x800u, hash & 0xFFFFFF);
         }
 
-        private static List<ProjectedStaticEntry> Project(IEnumerable<ILeveledItemEntryGetter> entries) => entries
+        internal static List<ProjectedStaticEntry> Project(IEnumerable<ILeveledItemEntryGetter> entries) => entries
             .Select(e => new ProjectedStaticEntry(e, new(e.Data?.Reference.FormKey ?? FormKey.Null))).ToList();
 
         // Manager::ProcessBatchLeveledList for once-per-list insertions: traverse
@@ -1101,7 +1094,7 @@ public static partial class PatcherEngine
         // the planned effective entries, or else a known result KnownChange accepts.
         public ImmutableArray<ProjectedStaticEntry> ForWriting(FormKey target, ImmutableArray<ProjectedStaticEntry> desired, ILeveledItemGetter? written = null)
         {
-            InvalidDataException Refuse(string reason) => new($"LLOS target {target}: {reason}. No output was installed.");
+            RouteRefusalException Refuse(string reason) => new($"LLOS target {target}: {reason}.");
             if (IsGenerated(target)) throw Refuse("LLOS creates this list at startup, so XEP cannot write it");
             if (Problems.TryGetValue(target, out var problem)) throw Refuse("unsupported input prevents proving output composition (" + problem + ")");
             if (Withheld(desired) is { } why) throw Refuse("XEP output would add an entry matched by an uninterpreted rule (" + why + ")");
@@ -1126,7 +1119,7 @@ public static partial class PatcherEngine
                 "native replay would change planned output");
         }
 
-        private ImmutableArray<ProjectedStaticEntry> NoGenerated(ImmutableArray<ProjectedStaticEntry> physical, Func<string, InvalidDataException> refuse)
+        private ImmutableArray<ProjectedStaticEntry> NoGenerated(ImmutableArray<ProjectedStaticEntry> physical, Func<string, RouteRefusalException> refuse)
             => generated.Count > 0 && physical.Any(e => e.Reference.GeneratedOccurrence is null && IsGenerated(e.Reference.Existing))
                 ? throw refuse("the written list would reference a list LLOS creates at startup") : physical;
 
@@ -1135,7 +1128,9 @@ public static partial class PatcherEngine
         public (ImmutableArray<ProjectedStaticEntry> Effective, ImmutableArray<ProjectedStaticEntry> Physical)
             ProjectGenerated(ILeveledItemGetter list, ImmutableArray<ProjectedStaticEntry> desired)
         {
-            InvalidDataException Refuse(string why) => new($"LLOS generated list {list.EditorID} [{list.FormKey}]: {why}. No output was installed.");
+            // No rule reaches the list or its entries: every check below passes and returns desired unchanged.
+            if (desired.Length <= 255 && !MayAffect(list.FormKey, desired)) return (desired, desired);
+            RouteRefusalException Refuse(string why) => new($"LLOS generated list {list.EditorID} [{list.FormKey}]: {why}.");
             if (IsGenerated(list.FormKey)) throw Refuse("LLOS creates this list at startup, so XEP cannot write it");
             if (Withheld(desired) is { } why) throw Refuse("an entry is matched by an uninterpreted rule (" + why + ")");
             if (ConditionalOnVariants(list.FormKey, desired, list.Flags) is { } conditional) throw Refuse(conditional);
@@ -1147,7 +1142,7 @@ public static partial class PatcherEngine
         // physical list replays to the plan, KnownChange writes the plan and
         // accepts LLOS's exact result.
         private ImmutableArray<ProjectedStaticEntry> WrittenByLlos(FormKey list, string? name, ImmutableArray<ProjectedStaticEntry> desired, LeveledItem.Flag flags,
-            Func<string, InvalidDataException> refuse)
+            Func<string, RouteRefusalException> refuse)
         {
             // Infer LLOS's own entries from the planned content, ignoring the native
             // traversal cut-off: the writer may split this list into overflow nodes.
@@ -1188,9 +1183,9 @@ public static partial class PatcherEngine
         // selector) must stay within the native 255-entry cap. `unknown` names the refusal when the result cannot be
         // accepted.
         private ImmutableArray<ProjectedStaticEntry> KnownChange(FormKey list, string? name, List<ProjectedStaticEntry> physical, LeveledItem.Flag flags,
-            ImmutableArray<ProjectedStaticEntry> desired, Func<string, InvalidDataException> refuse, string unknown)
+            ImmutableArray<ProjectedStaticEntry> desired, Func<string, RouteRefusalException> refuse, string unknown)
         {
-            InvalidDataException Refuse(string why) => refuse($"{unknown} ({why})");
+            RouteRefusalException Refuse(string why) => refuse($"{unknown} ({why})");
             if (UncertainChange(list, physical, flags) is { } uncertain) throw Refuse(uncertain);
             // LLOS drops entry data from every list it changes.
             if (desired.Any(e => e.HasExtraData)) throw Refuse("LLOS would drop the entry data a planned entry holds");
@@ -1343,13 +1338,13 @@ public static partial class PatcherEngine
         public string? WritingProblem(FormKey target, ImmutableArray<ProjectedStaticEntry> desired, ILeveledItemGetter? written = null)
         {
             try { ForWriting(target, desired, written); return null; }
-            catch (InvalidDataException ex) { return ex.Message.Replace(" No output was installed.", "", StringComparison.Ordinal); }
+            catch (RouteRefusalException refusal) { return refusal.Message; }
         }
 
         public string? GeneratedProblem(ILeveledItemGetter list, ImmutableArray<ProjectedStaticEntry> desired)
         {
             try { ProjectGenerated(list, desired); return null; }
-            catch (InvalidDataException ex) { return ex.Message.Replace(" No output was installed.", "", StringComparison.Ordinal); }
+            catch (RouteRefusalException refusal) { return refusal.Message; }
         }
     }
 }

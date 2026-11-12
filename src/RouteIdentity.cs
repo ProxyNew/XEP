@@ -11,7 +11,7 @@ public static partial class PatcherEngine
         ? (key.ID, "", ModType.Master) : (key.ID, key.ModKey.Name, key.ModKey.Type);
 
     // Queries may borrow a path; a retained cache key owns a detached snapshot.
-    private readonly record struct RoutePathIdentity(IReadOnlyList<FormKey>? Items)
+    internal readonly record struct RoutePathIdentity(IReadOnlyList<FormKey>? Items)
     {
         public RoutePathIdentity Snapshot() => new(Items is null ? null : Array.AsReadOnly(Items.ToArray()));
         public bool Equals(RoutePathIdentity other)
@@ -31,7 +31,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private readonly record struct MirrorRouteIdentity((uint Id, string Name, ModType Type) Destination, string Level,
+    internal readonly record struct MirrorRouteIdentity((uint Id, string Name, ModType Type) Destination, string Level,
         RoutePathIdentity Isolation, RoutePathIdentity Material, string Recipient)
     {
         public static MirrorRouteIdentity Of(SpecializedRoute route) => new(RouteTextKey(route.Destination.List), route.Destination.Level.ToString(),
@@ -40,7 +40,7 @@ public static partial class PatcherEngine
     }
 
     // The source and payload enter only through their walk (MirrorSourcePaths).
-    private readonly record struct MirrorGateIdentity(int Walk, (uint Id, string Name, ModType Type) Receiver, MirrorRouteIdentity Route)
+    internal readonly record struct MirrorGateIdentity(int Walk, (uint Id, string Name, ModType Type) Receiver, MirrorRouteIdentity Route)
     {
         public static MirrorGateIdentity Of(MirrorSite site, MirrorSourceWalk walk, SpecializedRoute route)
             => new(walk.Id, RouteTextKey(site.Receiver), MirrorRouteIdentity.Of(route));

@@ -27,8 +27,6 @@ public sealed record CdfInputReport(string Status, string Version, string DllSha
 {
     internal IReadOnlyList<string> Information { get; init; } = [];
     public CdfSettings Settings { get; init; } = new("default", null, 25000);
-    internal IReadOnlyDictionary<string, ReadOnlyMemory<byte>> CapturedBytes { get; init; }
-        = new Dictionary<string, ReadOnlyMemory<byte>>();
 }
 
 // Diagnostic inventory, not a distribution interpreter. The observed 3.1.0 DLL
@@ -37,7 +35,7 @@ public sealed record CdfInputReport(string Status, string Version, string DllSha
 // See the ticket's source-checksum-comparison.json and source-history-verification.md.
 internal static partial class CdfInputs
 {
-    private const string Source = "38ca39282e24ed8f7f8423f106d0a660689673c6";
+    internal const string Source = "38ca39282e24ed8f7f8423f106d0a660689673c6";
     private const string SourceMatchedDll = "D809129FD959A684F10818C62E7DBB2CE999F46E7D4A0EA759D9A114716309A9";
     private static readonly HashSet<string> Conditions = new(StringComparer.Ordinal)
     {
@@ -47,44 +45,46 @@ internal static partial class CdfInputs
         "playerSkills", "!playerSkills", "globals", "!globals", "questConditions"
     };
 
-    public static CdfInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods,
-        Func<IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>>? winners = null)
+    // The simple form for fixtures: builds the scan environment for one Data folder.
+    public static CdfInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods)
+        => Capture(FrameworkInputs.Create(dataFolder, mods));
+
+    internal static CdfInputReport Capture(FrameworkInputs inputs)
     {
         using var timing = PhaseTiming.Measure("cdf.capture");
-        if (string.IsNullOrWhiteSpace(dataFolder)) return Empty();
-        var plugins = Path.Combine(dataFolder, "SKSE", "Plugins");
-        var root = Path.Combine(plugins, "ContainerDistributionFramework");
-        var dll = Path.Combine(plugins, "ContainerDistributionFramework.dll");
-        var ini = Path.Combine(plugins, "ContainerDistributionFramework.ini");
-        if (!File.Exists(dll) && !File.Exists(ini) && !Directory.Exists(root)) return Empty();
+        if (!inputs.Exists) return Empty();
+        var plugins = inputs.PluginsFolder;
+        var resolver = inputs.Resolver;
+        var rootEntry = inputs.PluginDirectory("ContainerDistributionFramework");
+        var dll = inputs.PluginFile("ContainerDistributionFramework.dll");
+        var ini = inputs.PluginFile("ContainerDistributionFramework.ini");
+        if (dll is null && ini is null && rootEntry is null) return Empty();
         var files = new List<CdfFile>();
-        var bytes = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal);
         var notes = new DiagnosticMessages();
         var version = "";
         var dllHash = "";
         var incomplete = false;
         var settings = new CdfSettings("default", null, 25000);
-        var resolver = new Resolver(mods, winners ?? (() => PatcherEngine.LoadOrderWinners(mods)));
         try
         {
-            if (File.Exists(dll))
+            if (dll is not null)
             {
-                using var stream = File.OpenRead(dll);
-                dllHash = Convert.ToHexString(SHA256.HashData(stream));
-                version = FileVersionInfo.GetVersionInfo(dll).FileVersion ?? "unknown";
+                var dllIdentity = DllIdentity.ReadFileVersion(dll.Path);
+                dllHash = dllIdentity.Sha256;
+                version = dllIdentity.Version;
             }
-            if (File.Exists(ini)) CaptureFile(ini, false);
+            if (ini is not null) CaptureFile(ini.Path, false);
             // The pinned source uses direct regular files, exact lowercase suffix,
             // then sorted paths. Do not borrow SkyPatcher's recursive discovery.
             using var discovery = PhaseTiming.Measure("cdf.discovery");
-            if (Directory.Exists(root))
+            if (rootEntry is not null)
             {
-                if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+                if (rootEntry.IsLink)
                 {
                     incomplete = true;
                     notes.Add("CDF configuration directory is a link; discovery was not followed.");
                 }
-                else foreach (var path in Directory.EnumerateFiles(root).Where(p => Path.GetExtension(p) == ".json")
+                else foreach (var path in Directory.EnumerateFiles(rootEntry.Path).Where(p => Path.GetExtension(p) == ".json")
                     .Order(StringComparer.Ordinal)) CaptureFile(path, true);
             }
             else notes.AddInformation("CDF configuration directory is absent; the pinned source ends JSON discovery here. This differs from a present empty directory.");
@@ -94,7 +94,7 @@ internal static partial class CdfInputs
             incomplete = true;
             notes.Add("CDF capture incomplete: " + ex.Message);
         }
-        var release = ReleaseStatus(version, dllHash);
+        var release = Release.Status(version, dllHash);
         var sourceMatched = release == "source-matched-3.1.0";
         var sameMajor = release == "accepted-major-3";
         var status = incomplete ? "incomplete-capture" : dllHash.Length == 0 ? "missing-dll" : release;
@@ -114,27 +114,27 @@ internal static partial class CdfInputs
         if (unresolved > 0) notes.Add($"CDF: {unresolved} unresolved input references; no missing plugin is added as a master.");
         var identity = $"cdf-capture-v2\n{Source}\n{status}\n{version}\n{dllHash}\n" +
             string.Join('\n', files.Select(f => $"{f.Path}|{f.Sha256}|{f.Status}"));
-        return new(status, version, dllHash, Source, Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
-        { Information = notes.Information, CapturedBytes = bytes.AsReadOnly(), Settings = settings };
+        return new(status, version, dllHash, Source, FrameworkFiles.Hash(Encoding.UTF8.GetBytes(identity)), files.AsReadOnly(), notes.AsReadOnly())
+        { Information = notes.Information, Settings = settings };
 
         void CaptureFile(string path, bool json)
         {
             var relative = Path.GetRelativePath(plugins, path).Replace('\\', '/');
+            byte[]? content = null;
             try
             {
                 if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
                     throw new IOException("File link was not followed: " + relative);
-                var content = File.ReadAllBytes(path);
-                bytes.Add(relative, content);
+                content = File.ReadAllBytes(path);
                 using var parsing = PhaseTiming.Measure("cdf.parse");
                 var fileStatus = "settings-uninterpreted";
                 var rules = json ? ReadRules(content, resolver, out fileStatus) : Array.Empty<CdfRule>();
                 if (!json) settings = DescribeSettings(content);
-                files.Add(new(relative, Hash(content), fileStatus, rules));
+                files.Add(new(relative, FrameworkFiles.Hash(content), fileStatus, rules));
             }
             catch (JsonException ex)
             {
-                files.Add(new(relative, Hash(bytes[relative].ToArray()), "malformed-json", Array.Empty<CdfRule>()));
+                files.Add(new(relative, FrameworkFiles.Hash(content!), "malformed-json", Array.Empty<CdfRule>()));
                 notes.Add($"CDF {relative}: JSON inventory failed: {ex.Message}. Native Reader may consume a partial document; this is not evidence that the file is inactive.");
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -148,14 +148,11 @@ internal static partial class CdfInputs
 
     // The maintainer accepts every build with the pinned semantics: the
     // verified major silently, any other or unreadable major with a warning.
-    private static string ReleaseStatus(string version, string dllHash)
-        => version == "3.1.0.0" && dllHash == SourceMatchedDll ? "source-matched-3.1.0"
-            : SkyPatcherInputs.Major(version) == 3 ? "accepted-major-3" : "accepted-other-major";
+    internal static readonly FrameworkRelease Release = new("3.1.0.0", SourceMatchedDll, 3, "3.1.0");
 
     private static CdfInputReport Empty() => new("absent", "", "", Source, "", Array.Empty<CdfFile>(), Array.Empty<string>());
-    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
-    private static IReadOnlyList<CdfRule> ReadRules(byte[] bytes, Resolver resolver, out string status)
+    private static IReadOnlyList<CdfRule> ReadRules(byte[] bytes, NativeFormResolver resolver, out string status)
     {
         // JsonCpp accepts comments. Raw bytes remain available even where this
         // diagnostic reader cannot represent the native parser's permissiveness.
@@ -207,7 +204,7 @@ internal static partial class CdfInputs
                             }
                             else if (key == "questConditions" && field.Value.ValueKind == JsonValueKind.Object &&
                                 field.Value.TryGetProperty("questID", out var quest) && quest.ValueKind == JsonValueKind.String)
-                                refs.Add(resolver.Resolve("conditions.questConditions.questID", quest.GetString()!, typeof(IQuestGetter), true, false));
+                                refs.Add(ResolveReference(resolver, "conditions.questConditions.questID", quest.GetString()!, typeof(IQuestGetter), true, false));
                         }
                     }
                 }
@@ -225,7 +222,7 @@ internal static partial class CdfInputs
                             if (field.Name == "remove")
                             {
                                 if (field.Value.ValueKind == JsonValueKind.String)
-                                    refs.Add(resolver.Resolve(path + ".remove", field.Value.GetString()!, typeof(IItemGetter), false, false));
+                                    refs.Add(ResolveReference(resolver, path + ".remove", field.Value.GetString()!, typeof(IItemGetter), false, false));
                                 else notes.Add(path + ".remove is not a string.");
                             }
                             else if (field.Name is "add" or "removeByKeywords")
@@ -245,7 +242,7 @@ internal static partial class CdfInputs
                 {
                     if (value.ValueKind != JsonValueKind.String) { notes.Add(path + " contains a non-string identifier."); continue; }
                     var identifier = value.GetString()!;
-                    refs.Add(resolver.Resolve(path, identifier, expected, editorIdOnly, formIdOnly, valuePair));
+                    refs.Add(ResolveReference(resolver, path, identifier, expected, editorIdOnly, formIdOnly, valuePair));
                 }
             }
         }
@@ -262,44 +259,33 @@ internal static partial class CdfInputs
         }
     }
 
-    private sealed class Resolver(IReadOnlyList<ISkyrimModGetter> mods,
-        Func<IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>> loadWinners)
+    // CDF reference spellings: "0xHEX|Plugin" (the ID is masked to the plugin's local range) or an EditorID matched with case
+    // against the winning record's own name.
+    private static CdfReference ResolveReference(NativeFormResolver resolver, string field, string identifier, Type expected,
+        bool editorIdOnly, bool formIdOnly, bool valuePair = false)
     {
-        private readonly Dictionary<string, ISkyrimModGetter> plugins = mods.ToDictionary(m => m.ModKey.FileName.String, StringComparer.OrdinalIgnoreCase);
-        private IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>? winners;
-        private Dictionary<string, ISkyrimMajorRecordGetter[]>? names;
-        public bool HasPlugin(string name) => plugins.ContainsKey(name);
-
-        public CdfReference Resolve(string field, string identifier, Type expected, bool editorIdOnly, bool formIdOnly, bool valuePair = false)
+        CdfReference Result(string status, IMajorRecordGetter? record = null) => new(field, identifier, status, record?.FormKey.ToString());
+        var parts = identifier.Split('|');
+        IMajorRecordGetter record;
+        if (!editorIdOnly && parts.Length == 2)
         {
-            CdfReference Result(string status, ISkyrimMajorRecordGetter? record = null) => new(field, identifier, status, record?.FormKey.ToString());
-            var parts = identifier.Split('|');
-            ISkyrimMajorRecordGetter record;
-            if (!editorIdOnly && parts.Length == 2)
-            {
-                if (!parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ||
-                    !uint.TryParse(parts[0].AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var id))
-                    return Result("malformed-identifier");
-                if (!plugins.TryGetValue(parts[1], out var plugin)) return Result("missing-plugin");
-                winners ??= loadWinners();
-                id &= plugin.IsSmallMaster ? 0xFFFu : 0xFFFFFFu;
-                if (!winners.TryGetValue(new(plugin.ModKey, id), out var found)) return Result("missing-record");
-                record = found.Record;
-            }
-            else
-            {
-                if (formIdOnly || valuePair && parts.Length != 2) return Result("malformed-identifier");
-                winners ??= loadWinners();
-                // Only loaded winning records are evidence. Native EditorID cache
-                // aliases/case behavior are not certified by this diagnostic index.
-                names ??= winners.Values.Select(w => w.Record).Where(r => !string.IsNullOrEmpty(r.EditorID))
-                    .GroupBy(r => r.EditorID!, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToArray(), StringComparer.Ordinal);
-                if (!names.TryGetValue(valuePair ? parts[0] : identifier, out var matches)) return Result("missing-record");
-                if (matches.Length != 1) return Result("ambiguous-editorid");
-                record = matches[0];
-            }
-            if (record.IsDeleted) return Result("deleted-record");
-            return expected.IsInstanceOfType(record) ? Result("resolved", record) : Result("wrong-type");
+            if (!parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ||
+                !uint.TryParse(parts[0].AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var id))
+                return Result("malformed-identifier");
+            var (failure, located) = FormLocator.Locate(resolver, parts[1], id, FormIdRange.Mask);
+            if (failure is not null) return Result(failure);
+            record = located!;
         }
+        else
+        {
+            if (formIdOnly || valuePair && parts.Length != 2) return Result("malformed-identifier");
+            // Only loaded winning records are evidence. Native EditorID cache
+            // aliases/case behavior are not certified by this diagnostic index.
+            var (status, found) = resolver.EditorId(valuePair ? parts[0] : identifier, caseSensitive: true);
+            if (found is null) return Result(status);
+            record = found;
+        }
+        if (record.IsDeleted) return Result("deleted-record");
+        return expected.IsInstanceOfType(record) ? Result("resolved", record) : Result("wrong-type");
     }
 }

@@ -8,7 +8,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record MerchantInventoryEdge(FormKey Container, int Index, IContainerEntryGetter Original)
+    internal sealed record MerchantInventoryEdge(FormKey Container, int Index, IContainerEntryGetter Original)
     {
         // The identity is a pure function of the frozen entry and its slot; it is
         // cached on the entry object, outside the record's value equality.
@@ -28,7 +28,7 @@ public static partial class PatcherEngine
         }
     }
     private sealed record MerchantContextRoute(FormKey[] Path, MerchantInventoryEdge Edge, MaterialSourceProof Proof);
-    private sealed record MerchantInventoryRewrite(MerchantInventoryEdge Edge, FormKey Root, FormKey PreservedStockParent = default);
+    internal sealed record MerchantInventoryRewrite(MerchantInventoryEdge Edge, FormKey Root, FormKey PreservedStockParent = default);
 
     // Container stock is frozen consumer data; only its private rewrites change.
     private static (FormKey Container, int Index, FormKey Item)[] ContainerRecipientReferences(Catalog catalog)
@@ -38,22 +38,12 @@ public static partial class PatcherEngine
                 .Where(x => x.entry.Item.Count > 0 && !x.entry.Item.Item.IsNull)
                 .Select(x => (container.FormKey, x.index, x.entry.Item.Item.FormKey))).ToArray());
 
+    // Coverage follows effective stock, not a clone's frozen original ancestry.
+    // A private rewrite belongs only to its own winning CONT inventory entry.
     private static IEnumerable<(FormKey Root, FormKey Container)> MerchantInventoryCoverageRoots(Catalog catalog)
     {
         foreach (var (container, index, item) in ContainerRecipientReferences(catalog))
             yield return (catalog.MerchantInventoryRewrites.TryGetValue((container, index), out var rewrite) ? rewrite.Root : item, container);
-    }
-
-    // Coverage follows effective stock, not a clone's frozen original ancestry.
-    // A private rewrite belongs only to its own winning CONT inventory entry.
-    private static HashSet<FormKey> MerchantInventoryCoverage(IEnumerable<FormKey> starts, Catalog catalog)
-        => RecipientCoverage(starts, MerchantInventoryCoverageRoots(catalog), catalog);
-
-    private static HashSet<T> RecipientCoverage<T>(IEnumerable<FormKey> starts,
-        IEnumerable<(FormKey Root, T Consumer)> roots, Catalog catalog)
-    {
-        var reachable = RecipientReach(starts, catalog);
-        return reachable.Count == 0 ? [] : roots.Where(r => reachable.Contains(r.Root)).Select(r => r.Consumer).ToHashSet();
     }
 
     // Effective loot lists reachable upward from the selected equipment.
@@ -70,30 +60,32 @@ public static partial class PatcherEngine
         // entries from their current records so replaced stock never counts twice.
         var changed = (catalog.ChangedListParents ??= new(PlanningListScope.ChangedStock)).Refresh(catalog);
         var edges = (catalog.PlanningEdges ??= new()).Refresh(catalog);
-        IEnumerable<FormKey> Additions(FormKey child)
-        {
-            foreach (var parent in changed.Parents(child)) yield return parent;
-            foreach (var edge in edges.EdgesTo(child))
-            {
-                yield return edge.Parent.List;
-                if (InheritableEdge(edge, catalog))
-                    foreach (var target in InheritedCopyTargets(edge.Parent.List, copies, catalog)) yield return target;
-            }
-            foreach (var insertion in edges.PlacementsTo(child))
-                foreach (var target in InheritedCopyTargets(insertion.Target.List, copies, catalog).Prepend(insertion.Target.List))
-                    yield return target;
-        }
         // Walk upward once from the selected equipment, then test all effective
         // recipient roots. Do not repeat the whole loot traversal per recipient.
+        // Each node's planned additions are pushed in place, in the order: changed
+        // stock, edges with their inherited copies, runtime placements and theirs.
         var reachable = new HashSet<FormKey>();
         var todo = new Stack<FormKey>(targets);
         while (todo.TryPop(out var next))
         {
             if (!reachable.Add(next)) continue;
-            foreach (var parent in graph.Parents.GetValueOrDefault(next, []))
-                if (parent.Count > 0 && !changed.Contains(parent.List)
-                    && catalog.Lists.TryGetValue(parent.List, out var list) && !list.IsDeleted) todo.Push(parent.List);
-            foreach (var parent in Additions(next)) todo.Push(parent);
+            if (graph.Parents.TryGetValue(next, out var parents))
+                foreach (var parent in parents)
+                    if (parent.Count > 0 && !changed.Contains(parent.List)
+                        && catalog.Lists.TryGetValue(parent.List, out var list) && !list.IsDeleted) todo.Push(parent.List);
+            foreach (var parent in changed.Parents(next)) todo.Push(parent);
+            foreach (var edge in edges.EdgesTo(next))
+            {
+                todo.Push(edge.Parent.List);
+                if (copies.Contains(edge.Parent.List) && InheritableEdge(edge, catalog))
+                    foreach (var target in InheritedCopyTargets(edge.Parent.List, copies, catalog)) todo.Push(target);
+            }
+            foreach (var insertion in edges.PlacementsTo(next))
+            {
+                todo.Push(insertion.Target.List);
+                if (copies.Contains(insertion.Target.List))
+                    foreach (var target in InheritedCopyTargets(insertion.Target.List, copies, catalog)) todo.Push(target);
+            }
         }
         return reachable;
     }
@@ -102,15 +94,10 @@ public static partial class PatcherEngine
     // filter cannot authorize another placed context of the same base container.
     private static string? MerchantContainerIsolationProblem(FormKey container, Catalog catalog)
     {
+        // The winner index already holds every placed reference; the plugins are not read again.
         var placed = SharedOnce(catalog, () => catalog.MerchantPlacedReferences, value => catalog.MerchantPlacedReferences = value, () =>
-        {
-            var winners = new Dictionary<FormKey, IPlacedObjectGetter>();
-            foreach (var mod in catalog.Mods)
-                foreach (var reference in mod.EnumerateMajorRecords<IPlacedObjectGetter>())
-                    winners[reference.FormKey] = reference;
-            return winners.Values.Where(r => !r.IsDeleted && !r.Base.IsNull)
-                .GroupBy(r => r.Base.FormKey).ToDictionary(g => g.Key, g => g.Select(r => r.FormKey).Order().ToArray());
-        });
+            RuntimeRecordWinners(catalog).Values.Select(w => w.Record).OfType<IPlacedObjectGetter>().Where(r => !r.IsDeleted && !r.Base.IsNull)
+                .GroupBy(r => r.Base.FormKey).ToDictionary(g => g.Key, g => g.Select(r => r.FormKey).Order().ToArray()));
         var references = placed.GetValueOrDefault(container, []);
         return references.Length == 1 ? null : references.Length == 0
             ? "no winning placed merchant container reference"

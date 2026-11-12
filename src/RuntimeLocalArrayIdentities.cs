@@ -9,19 +9,16 @@ public static partial class PatcherEngine
 {
     private sealed record RuntimeLocalArrayEffect(string Receiver, string CapturedTarget, string Method,
         string PayloadExpression, string Level, string Count, int Offset, bool TargetBindingProved);
-    private sealed record RuntimeLocalArrayIdentity(string OwnerIdentity, string Function, string Expression,
-        int Offset, int? Length, int? Index, string[] PossibleIdentities, bool MayBeNone,
-        bool UnknownIdentityPossible, string? Problem, string Evidence, RuntimeLocalArrayEffect[] ObservedEffects);
+    internal sealed record RuntimeLocalArrayIdentity(string[] PossibleIdentities, bool UnknownIdentityPossible, string? Problem, string Evidence);
 
     // An identity domain conditional on this exact expression being evaluated.
     // Identity alone does not establish a receiver binding, footprint,
     // availability, counts or controllers.
     // Live FLST/VMAD arrays and persistent storage are deliberately excluded.
-    private static RuntimeLocalArrayIdentity FreshRuntimeArrayIdentity(string expression, ScriptInstance instance,
+    internal static RuntimeLocalArrayIdentity FreshRuntimeArrayIdentity(string expression, ScriptInstance instance,
         ScriptFunction? function, int position, Catalog catalog)
     {
-        RuntimeLocalArrayIdentity Refuse(string problem) => new(instance.Identity, function?.Name ?? "", expression,
-            position, null, null, [], true, true, problem, "", []);
+        RuntimeLocalArrayIdentity Refuse(string problem) => new([], true, problem, "");
         if (instance.Text is null || function is null || instance.Text.Length > 1_000_000
             || !instance.Functions.Contains(function) || position < function.BodyStart || position >= function.End)
             return Refuse("local array identity has no bounded associated caller body");
@@ -132,8 +129,7 @@ public static partial class PatcherEngine
             + "|" + catalog.RuntimeBaseScripts.GetValueOrDefault("LeveledItem")
             + "|" + string.Join('|', new[] { "Form", "Game", "LeveledItem" }.Select(n => n + ":" + catalog.RuntimeBaseScriptDiagnosticEvidence.GetValueOrDefault(n)))
             + "|" + string.Join('|', effects.Select(e => e.ToString()));
-        return new(instance.Identity, function.Name, expression, position, length, index,
-            value.Key is { } found ? [found.ToString()] : [], true, false, null,
-            "fresh-local-array-identities-v1 " + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(signature))), effects.ToArray());
+        return new(value.Key is { } found ? [found.ToString()] : [], false, null,
+            "fresh-local-array-identities-v1 " + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(signature))));
     }
 }

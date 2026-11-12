@@ -12,7 +12,7 @@ internal enum ScanStage { LoadOrder, Catalog, Availability, Candidates, Review, 
 internal static class ScanProgress
 {
     private static readonly double[] Starts = [0, 0.01, 0.05, 0.39, 0.42, 0.71, 1];
-    private static readonly AsyncLocal<Reporter?> Current = new();
+    internal static readonly AsyncLocal<Reporter?> Current = new();
 
     // Reports a monotonic fraction in [0, 1] whenever it advances by at least 0.5%.
     public static IDisposable Begin(Action<double> report) => Current.Value = new Reporter(report);
@@ -37,7 +37,7 @@ internal static class ScanProgress
         if (Current.Value is { } reporter && total > 0) reporter.Move(reporter.Stage, (double)done / total);
     }
 
-    private sealed class Reporter(Action<double> report) : IDisposable
+    internal sealed class Reporter(Action<double> report) : IDisposable
     {
         private double reported = -1;
         public int Stage { get; private set; }

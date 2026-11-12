@@ -5,8 +5,8 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record EnchantmentRecommendation(string Reason);
-    private sealed partial class Catalog
+    internal sealed record EnchantmentRecommendation(string Reason);
+    internal sealed partial class Catalog
     {
         public Dictionary<FormKey, IMagicEffectGetter> MagicEffectRecords { get; init; } = [];
         public Dictionary<FormKey, EnchantmentRecommendation> EnchantmentRecommendations { get; set; } = [];
@@ -17,7 +17,7 @@ public static partial class PatcherEngine
     }
 
     // Selection policy only: recommendations never authorize reuse or placement.
-    private static void ApplyEnchantmentRecommendations(Catalog catalog, ProfileSettings profile)
+    internal static void ApplyEnchantmentRecommendations(Catalog catalog, ProfileSettings profile)
     {
         var recommendations = new Dictionary<FormKey, EnchantmentRecommendation>();
         AddSummerturgyRecommendations(catalog, recommendations);

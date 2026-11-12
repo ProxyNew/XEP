@@ -6,7 +6,7 @@ public static partial class PatcherEngine
 {
     // Captured adjacency has no overlay readers or catalog-owned lazy state.
     // Both on-demand queries and bounded preparation use these same traversals.
-    private sealed class SpecializedGraphFacts(
+    internal sealed class SpecializedGraphFacts(
         Dictionary<FormKey, FormKey[]> parents, Dictionary<FormKey, FormKey[]> children)
     {
         public HashSet<FormKey> Up(FormKey key)

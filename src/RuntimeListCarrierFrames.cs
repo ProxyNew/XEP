@@ -5,7 +5,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record RuntimeListCarrier(FormKey? Parent, string Evidence, string? Instance = null);
+    internal sealed record RuntimeListCarrier(FormKey? Parent, string Evidence, string? Instance = null);
 
     // Known possible handle exports are collected before binding/unlock proof.
     // Carrier obligations never establish execution or availability.

@@ -45,7 +45,7 @@ public static partial class PatcherEngine
             && catalog.MaterialFamilyOriginals.TryGetValue(original, out var originalPreserved))
             catalog.CopyTopology.RegisterClone(preservedKey, originalPreserved);
         // Take a snapshot: coordinating a copy creates another content-copy mapping.
-        foreach (var copy in catalog.SpecializedCloneOriginals.Where(p => p.Value == target).Select(p => p.Key).ToArray())
+        foreach (var copy in catalog.CopyTopology.Copies(catalog)[target].ToArray())
         {
             var copyPreserved = EnsureMaterialFamily(copy, category, catalog);
             catalog.CopyTopology.RegisterClone(copyPreserved, preservedKey);

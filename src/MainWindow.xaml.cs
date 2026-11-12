@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Windows;
 using System.Windows.Data;
 using System.Windows.Input;
@@ -21,51 +20,17 @@ public static class PolicyValues
     ];
 }
 
-public static class DistributionValues
-{
-    public static IReadOnlyList<DistributionTarget> All { get; } = Enum.GetValues<DistributionTarget>();
-}
-
-[Flags]
-internal enum ScanRefreshScope
-{
-    None = 0,
-    Scan = 1,
-    DiscoverProviders = 2,
-    Full = Scan | DiscoverProviders
-}
-
 internal sealed class DeferredScanState
 {
     private long _revision;
     private long _completedRevision;
-    private readonly List<(long Revision, string Reason, ScanRefreshScope Scope)> _changes = [];
 
     public bool IsDirty => _revision > _completedRevision;
     public long Revision => _revision;
-    public string Reasons
-    {
-        get
-        {
-            var reasons = _changes.Where(x => x.Revision > _completedRevision).Select(x => x.Reason)
-                .Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
-            return reasons.Length == 0 ? "settings changed" : string.Join(", ", reasons);
-        }
-    }
-    public ScanRefreshScope Scope => _changes.Where(x => x.Revision > _completedRevision)
-        .Aggregate(ScanRefreshScope.None, (scope, change) => scope | change.Scope);
 
-    public void Mark(string reason, ScanRefreshScope scope)
-    {
-        _revision++;
-        _changes.Add((_revision, reason.Trim(), scope));
-    }
+    public void Mark() => _revision++;
 
-    public void Complete(long revision)
-    {
-        _completedRevision = Math.Max(_completedRevision, revision);
-        _changes.RemoveAll(x => x.Revision <= _completedRevision);
-    }
+    public void Complete(long revision) => _completedRevision = Math.Max(_completedRevision, revision);
 }
 
 internal sealed class PreviewCacheState
@@ -107,21 +72,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 {
     internal BusyIcon MainBusyIcon = null!;
 
-    private readonly AppSettings _settings;
+    internal readonly AppSettings _settings;
     private ScanResult? _scan;
     // Scan's loaded plugins and analysis, reused by Preview, Generate and settings-driven
     // rescans. A Data folder or profile change discards it; the session end releases it.
     private ScanSnapshot? _snapshot;
     private string _profileName;
     private string _status = "Loading the active load order. Launch through MO2 when using its virtual mod files.";
-    private string _summary = "No scan yet";
     private string _searchText = "";
     private string _enchantmentSearchText = "";
-    private string _previewDetails = "Choose Generate Patch after scanning to calculate output files, variant counts, and leveled-list growth before confirming generation.";
-    private string _previewReportDetails = "Choose Generate Patch in the main window to calculate the full output report before confirming generation.";
-    private string _rescanStatus = "Updating review data…";
     private double? _operationProgress;
-    private bool _isRescanning;
     private bool _isBusyVisual;
     private string _busyTitle = "Scanning load order";
     private bool _suppressItemEvents;
@@ -129,12 +89,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _suppressEnchantmentEvents;
     private System.Windows.Point _providerDragStart;
     private EnchantmentProviderOption? _draggedProvider;
-    private bool _startupComplete;
-    private readonly DeferredScanState _deferredScan = new();
-    private readonly PreviewCacheState _previewCache = new();
+    internal readonly DeferredScanState _deferredScan = new();
+    internal readonly PreviewCacheState _previewCache = new();
     private bool _scanRefreshInProgress;
-    private readonly System.Windows.Threading.DispatcherTimer _refreshTimer = new()
-        { Interval = TimeSpan.FromMilliseconds(600) };
+    // Set at startup and on a profile switch; only a successful discovery clears it.
+    internal bool _discoveryOwed;
 
     public ObservableCollection<PluginDecision> Plugins { get; } = [];
     public ICollectionView PluginsView { get; }
@@ -153,25 +112,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public string? DataFolder
     {
         get => _settings.DataFolder;
-        set
-        {
-            var previous = _settings.DataFolder;
-            _settings.DataFolder = EmptyToNull(value);
-            if (_settings.DataFolder != previous) DiscardSnapshot();
-            Changed(); RequestScanRefresh("Data folder", ScanRefreshScope.Full);
-        }
     }
     public string? OutputFolder { get => _settings.OutputFolder; set { _settings.OutputFolder = EmptyToNull(value); Changed(); InvalidatePreview("output folder changed"); } }
-    public DistributionTarget DistributionTarget
-    {
-        get => _settings.CurrentProfile.DistributionTarget;
-        set { _settings.CurrentProfile.DistributionTarget = value; Changed(); SaveSettings(); InvalidatePreview("distribution target changed"); }
-    }
-    public int WarningListEntries
-    {
-        get => _settings.CurrentProfile.WarningListEntries;
-        set { _settings.CurrentProfile.WarningListEntries = Math.Clamp(value, 1, 255); Changed(); SaveSettings(); InvalidatePreview("list-size warning threshold changed"); }
-    }
     public bool BroadUnmatchedDistribution
     {
         get => _settings.CurrentProfile.BroadUnmatchedDistribution;
@@ -192,23 +134,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         get => _settings.CurrentProfile.KeepUndistributedVariants;
         set { _settings.CurrentProfile.KeepUndistributedVariants = value; Changed(); SaveSettings(); InvalidatePreview("undistributed-record retention changed"); }
     }
-    // The layout is picked at generation, so previews show both outcomes.
-    private static string OutputChoices(GenerationPreview preview)
-    {
-        var light = OutputLayout.Light.PatchCount(preview.NewRecords);
-        return $"{light:N0} light ESP plugin{(light == 1 ? "" : "s")} or 1 non-light plugin ({preview.NewRecords:N0} new records)";
-    }
     public string SearchText { get => _searchText; set { _searchText = value ?? ""; Changed(); ItemsView.Refresh(); } }
     public string EnchantmentSearchText { get => _enchantmentSearchText; set { _enchantmentSearchText = value ?? ""; Changed(); EnchantmentsView.Refresh(); } }
     public string Status { get => _status; set { _status = value; SessionRuntime.Log(value); Changed(); } }
-    public string Summary { get => _summary; set { _summary = value; Changed(); } }
-    public string PreviewDetails { get => _previewDetails; set { _previewDetails = value; Changed(); } }
-    public string PreviewReportDetails { get => _previewReportDetails; private set { _previewReportDetails = value; Changed(); } }
     public bool IsPreviewCurrent => _previewCache.IsCurrent;
     public string PreviewStateText => _previewCache.StateText;
-    public string RescanStatus { get => _rescanStatus; private set { _rescanStatus = value; Changed(); } }
-    public bool IsRescanning { get => _isRescanning; private set { _isRescanning = value; Changed(); } }
-    public bool IsBusyVisual { get => _isBusyVisual; private set { _isBusyVisual = value; Changed(); } }
+    public bool IsBusyVisual { get => _isBusyVisual; internal set { _isBusyVisual = value; Changed(); } }
     public string BusyTitle { get => _busyTitle; private set { _busyTitle = value; Changed(); } }
     // Overall operation completion in percent; null until an operation reports, shown as indeterminate.
     public double? OperationProgressPercent { get => _operationProgress; internal set { _operationProgress = value; Changed(); Changed(nameof(IsOperationProgressUnknown)); } }
@@ -221,12 +152,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _settings = settings;
         // The interactive session applies an installed mod-author rules file.
         _settings.ApplyAuthorRules = true;
-        ContentRendered += (_, _) =>
-        {
-            if (!_authorPromptPending) return;
-            _authorPromptPending = false;
-            if (AskAuthorConflicts()) RequestScanRefresh("mod-author rules answers");
-        };
         UiTheme.Apply(settings.DarkTheme);
         UiTheme.Attach(this);
         _profileName = _settings.ProfileName;
@@ -236,7 +161,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Filter = row => row is PluginDecision { EligibleItems: > 0, HasDistributionCandidates: true }
         };
         SpecializedItemsView = CollectionViewSource.GetDefaultView(SpecializedItems);
-        SpecializedItemsView.Filter = o => o is CandidateItem c && c.IsPlayable && c.HasSpecializedEquipmentKind && IsPluginEnabledForSpecializedReview(c.Plugin) &&
+        SpecializedItemsView.Filter = o => o is CandidateItem c && c.IsPlayable && c.HasSpecializedEquipmentKind && IsPluginEnabledForReview(c.Plugin) &&
             ($"{c.Plugin} {c.Name} {c.EditorId} {c.FormKey} {c.Category} {c.SpecializedDecisionReason} {c.SourceDistributionSummary} {c.SpecializedOptionSummary}")
             .Contains(_specializedSearchText, StringComparison.OrdinalIgnoreCase);
         ItemsView = CollectionViewSource.GetDefaultView(Items);
@@ -250,22 +175,42 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (SessionRuntime.DirectoryPath is not null)
             Title += $" — session {SessionRuntime.Id[..Math.Min(8, SessionRuntime.Id.Length)]} — {SettingsStore.PathName}";
         DataContext = this;
-        _refreshTimer.Tick += async (_, _) =>
-        {
-            _refreshTimer.Stop();
-            await FlushPendingScanAsync("automatic refresh");
-        };
         Closing += (_, e) =>
         {
+            // A running operation only disables the window's content: the title-bar close and
+            // Alt+F4 still arrive, and closing would discard the data the operation uses.
+            if (OperationInProgress)
+            {
+                e.Cancel = true;
+                // Told after Closing returns: a box shown inside it keeps the window closing, and
+                // the window's own Close() after a generation would then throw. A shutdown
+                // (logoff, an unhandled exception) closes the window anyway; then there is no box.
+                var running = BusyTitle;
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!IsVisible || !OperationInProgress || App.EndingAfterFailure) return;
+                    WpfMessageBox.Show(this, $"{running} is still running. Wait for it to finish, then close the window.",
+                        "Operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
+                });
+                return;
+            }
+            // An unhandled exception is ending the application; nothing here can stop that.
+            if (App.EndingAfterFailure) return;
+            _closing = true;
             if (!_settingsSave.HasUnsavedChanges || SaveSettings(notify: false)) return;
             e.Cancel = WpfMessageBox.Show(this, SettingsSaveNotice + "\n\nClose and discard the unsaved choices in this window?",
                 "Unsaved settings", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes;
+            _closing = !e.Cancel;
         };
         Closed += (_, _) =>
         {
-            _refreshTimer.Stop();
+            // Only a shutdown closes the window while an operation runs; it was interrupted.
+            var interrupted = OperationInProgress;
+            if (interrupted) SessionRuntime.Log($"The window closed while '{BusyTitle}' was running; the session is recorded as interrupted.");
             DiscardSnapshot();
-            try { SessionRuntime.Finish(_settingsSave.HasUnsavedChanges ? 1 : 0); }
+            // The unhandled-exception handler has already recorded the session as failed.
+            if (App.EndingAfterFailure) return;
+            try { SessionRuntime.Finish(_settingsSave.HasUnsavedChanges || interrupted ? 1 : 0); }
             catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
             {
                 SessionRuntime.ExitCode = 1;
@@ -275,16 +220,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
     }
 
-    private ScanSnapshot Snapshot => _snapshot ?? throw new InvalidOperationException("No scan data is loaded. Wait for the scan to finish.");
+    internal ScanSnapshot Snapshot => _snapshot ?? throw new InvalidOperationException("No scan data is loaded. Wait for the scan to finish.");
 
+    // Startup discovers the origins only; the first Patch Review or Generate scans.
     internal async Task InitializeAsync()
     {
-        if (_startupComplete) return;
-        _startupComplete = true;
-        await RefreshLoadOrder();
+        _discoveryOwed = true;
+        _deferredScan.Mark();
+        await RefreshLoadOrder(discoverOnly: true);
     }
 
-    private void ToggleTheme(object sender, RoutedEventArgs e)
+    internal void ToggleTheme(object sender, RoutedEventArgs e)
     {
         _settings.DarkTheme = !_settings.DarkTheme;
         UiTheme.Apply(_settings.DarkTheme); SaveSettings();
@@ -335,63 +281,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _snapshot = null;
     }
 
-    private void RequestScanRefresh(string reason, ScanRefreshScope scope = ScanRefreshScope.Scan)
+    private void RequestScanRefresh(string reason)
     {
         SaveDecisions();
-        _deferredScan.Mark(reason, scope);
+        _deferredScan.Mark();
+        Changed(nameof(HasPendingScanChanges));
         InvalidatePreview(reason + " changed");
-        if (!_startupComplete) return;
-        SchedulePendingScan();
+        // Before the first scan there are no rows to be out of date.
+        Status = _scan is null ? "Open Patch Review or Generate Patch to scan."
+            : "Patch Review rows are out of date. Choose Update UI for current settings in Patch Review, or Generate Patch, to rescan.";
     }
 
-    private void SchedulePendingScan()
-    {
-        if (!_startupComplete || !_deferredScan.IsDirty) return;
-        Status = $"Waiting to rescan because {_deferredScan.Reasons} changed…";
-        _refreshTimer.Stop();
-        _refreshTimer.Start();
-    }
+    // Shows Patch Review's update button; raised where the deferred scan is marked or completed.
+    public bool HasPendingScanChanges => _deferredScan.IsDirty;
 
-    internal bool HasPendingScanChanges => _deferredScan.IsDirty;
-
-    internal async Task<bool> FlushPendingScanAsync(string boundary)
+    // Generate and Patch Review need a current scan. A request that cannot scan shows the
+    // status line's reason; a failed scan has already shown its error box.
+    internal async Task<bool> FlushPendingScanAsync()
     {
-        if (!_deferredScan.IsDirty) return _scan is not null;
-        if (!_startupComplete) return false;
-        _refreshTimer.Stop();
-        RescanStatus = $"Rescanning because {_deferredScan.Reasons} changed…";
-        Status = $"Rescanning because {_deferredScan.Reasons} changed ({boundary})…";
-        await RefreshLoadOrder();
+        var revision = _deferredScan.Revision;
+        if (_deferredScan.IsDirty) await RefreshLoadOrder();
+        // Answers to the mod-author prompt mark the scan pending again; one more scan settles them.
+        if (_deferredScan.Revision > revision && !_scanFailed) await RefreshLoadOrder();
+        if (_deferredScan.IsDirty && !_scanFailed) WpfMessageBox.Show(Status, Title);
         return !_deferredScan.IsDirty && _scan is not null;
     }
 
-    private async Task RefreshLoadOrder()
+    // Discover only: stops before the scan and leaves it pending.
+    private async Task RefreshLoadOrder(bool discoverOnly = false)
     {
         if (_scanRefreshInProgress) return;
         _scanRefreshInProgress = true;
         var scanRevision = _deferredScan.Revision;
-        var refreshScope = _deferredScan.Scope;
-        var showRescan = _deferredScan.IsDirty;
-        if (showRescan) IsRescanning = true;
-        BusyTitle = _scan is null ? "Scanning load order" : "Rescanning patch data";
+        BusyTitle = discoverOnly ? "Discovering enchantment origins" : _scan is null ? "Scanning load order" : "Rescanning patch data";
+        var scanned = false;
         try
         {
-            await Busy(async () =>
+            scanned = await Busy(async () =>
             {
                 if (!Directory.Exists(DataFolder))
                 {
-                    Status = "Choose a valid Data folder to discover origins and scan automatically.";
+                    Status = "Choose a valid Data folder to discover enchantment origins.";
                     return;
                 }
-                var selectedOrder = _settings.CurrentProfile.EnchantmentProviderPlugins.ToList();
-                var selectedNames = selectedOrder.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                if (_scan is null || refreshScope.HasFlag(ScanRefreshScope.DiscoverProviders))
+                if (_discoveryOwed)
                 {
-                    RescanStatus = "Discovering enchantment origins and usable templates…";
-                    Status = RescanStatus;
+                    Status = "Discovering enchantment origins and usable templates…";
                     var discovered = await Task.Run(() => PatcherEngine.DiscoverProviders(_settings));
-                    selectedOrder = _settings.CurrentProfile.EnchantmentProviderPlugins.ToList();
-                    selectedNames = selectedOrder.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var selectedOrder = _settings.CurrentProfile.EnchantmentProviderPlugins.ToList();
+                    var selectedNames = selectedOrder.ToHashSet(StringComparer.OrdinalIgnoreCase);
                     var discoveredByName = discovered.ToDictionary(x => x.Plugin, StringComparer.OrdinalIgnoreCase);
                     var visualOrder = _settings.CurrentProfile.EnchantmentProviderOrder
                         .Concat(selectedOrder).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -412,21 +350,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                         Providers.Add(provider);
                     }
                     _suppressProviderEvents = false;
-                    if (selectedNames.Count == 0 || selectedNames.Any(name => !discovered.Any(x => x.Plugin.Equals(name, StringComparison.OrdinalIgnoreCase))))
-                    {
-                        Status = discovered.Count == 0
-                            ? "No usable enchantment origins are available in the active load order."
-                            : "Select available enchantment origins to scan automatically. Deselect any unavailable saved origins.";
-                        return;
-                    }
+                    _discoveryOwed = false;
                 }
-                else if (selectedNames.Count == 0)
+                // A saved origin missing from the load order has no usable template.
+                if (!Providers.Any(x => x.IsSelected) || Providers.Any(x => x.IsSelected && x.TemplateCount == 0))
                 {
-                    Status = "Select available enchantment origins to scan automatically. Deselect any unavailable saved origins.";
+                    Status = Providers.All(x => x.TemplateCount == 0)
+                        ? "No usable enchantment origins are available in the active load order."
+                        : "Select available enchantment origins, then open Patch Review or Generate Patch to scan. Deselect any unavailable saved origins.";
                     return;
                 }
-                RescanStatus = "Scanning equipment, enchantments, availability and leveled-list routes…";
-                Status = RescanStatus;
+                if (discoverOnly)
+                {
+                    Status = "Enchantment origins found. Open Patch Review or Generate Patch to scan.";
+                    return;
+                }
+                Status = "Scanning equipment, enchantments, availability and leveled-list routes…";
                 // The plugins load only for the first Scan or after a Data folder or profile
                 // change; a settings-driven rescan analyses the loaded plugins again.
                 ScanResult scan;
@@ -475,28 +414,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 SpecializedItemsView.Refresh();
                 EnchantmentsView.Refresh();
                 RowsReplaced?.Invoke();
-                UpdateSummary();
-                if (AskAuthorConflicts()) RequestScanRefresh("mod-author rules answers");
                 Status = scan.Warnings.Count == 0 ? "Scan complete. Review plugins or individual items, then choose Generate Patch."
                     : $"Scan complete with {scan.Warnings.Count} load-order warning(s). Review plugins or individual items, then choose Generate Patch.";
                 if (scan.ScriptAnalysisWarning is not null)
                     Status += " Script analysis is unavailable; unresolved script contexts remain protected.";
+                // Answers that change scan inputs leave the rows out of date; the status says so.
+                if (AskAuthorConflicts()) RequestScanRefresh("mod-author rules answers");
             }, kind: ProgressKind.Scan);
         }
         finally
         {
             _scanRefreshInProgress = false;
-            if (showRescan) IsRescanning = false;
-            // A setting can change while a scan is still running. Its timer may
-            // fire against the in-progress guard, so re-arm the debounce after
-            // this scan completes rather than leaving the newer revision stale.
-            if (_deferredScan.Revision > scanRevision) SchedulePendingScan();
+            // A failed scan leaves its inputs unscanned, so the next Generate, update button or
+            // first Patch Review scans again; nothing retries on its own.
+            _scanFailed = !scanned;
+            if (!scanned)
+            {
+                _deferredScan.Mark();
+                Status += " Choose Generate Patch, or Patch Review and its update button, to scan again.";
+            }
+            Changed(nameof(HasPendingScanChanges));
         }
     }
 
     private async void Generate(object sender, RoutedEventArgs e)
     {
-        if (!await FlushPendingScanAsync("generation requested")) { WpfMessageBox.Show("Wait for the automatic scan to finish. Check the Data folder and selected origins if it has not started.", Title); return; }
+        if (!await FlushPendingScanAsync()) return;
         SaveDecisions();
         var review = CurrentPolicies().Count(x => x.Value == PatchPolicy.Review);
         if (review > 0) { WpfMessageBox.Show($"{review} plugins still require a decision.", Title); return; }
@@ -508,7 +451,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var reusedPreview = _previewCache.TryGetCurrent(out var currentPreview);
             Status = reusedPreview ? "Using the current exact preview before generation…" : "Checking the exact output before generation…";
             var preview = reusedPreview ? currentPreview : await CreateAndCachePreview(ProgressKind.Generation);
-            ShowPreview(preview);
             // Always confirm: the output layout is chosen here.
             var confirmation = new GenerationConfirmationWindow(preview) { Owner = this };
             if (confirmation.ShowDialog() != true)
@@ -525,9 +467,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var snapshot = Snapshot;
             var reusePreview = _previewCache.IsCurrent;
             var initialFraction = (OperationProgressPercent ?? 0) / 100;
-            var report = await Task.Run(() => RunWithProgress(
-                () => PatcherEngine.Generate(_settings, policies, snapshot, reusePreview),
-                ProgressKind.Generation, initialFraction: initialFraction));
+            PatchReport report;
+            // An unhandled exception is already ending the application: start no write it could cut short.
+            if (App.EndingAfterFailure) return;
+            WritingOutput = true;
+            try
+            {
+                report = await Task.Run(() => RunWithProgress(
+                    () => PatcherEngine.Generate(_settings, policies, snapshot, reusePreview),
+                    ProgressKind.Generation, initialFraction: initialFraction));
+            }
+            finally
+            {
+                WritingOutput = false;
+                // An unhandled exception during the write postponed the shutdown until now.
+                if (App.EndingAfterFailure) System.Windows.Application.Current?.Shutdown(1);
+            }
+            if (App.EndingAfterFailure) return;
             SaveSettings();
             Status = $"Complete: {report.Variants} new, {report.ReusedVariants} reused variants; {report.UndistributedVariants} undistributed; {report.LeveledListsOverridden} lists updated.";
             // Writing output changes no scan input, so the snapshot stays valid.
@@ -536,7 +492,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             WpfMessageBox.Show($"{report.Outputs.Count} {(_settings.CurrentProfile.FullOutputPlugin ? "full plugin(s)" : "ESPFE file(s)")} written and fully validated.\n\n{string.Join(Environment.NewLine, report.Outputs)}\n{backup}\nVariants: {report.Variants}\nSource items: {report.SourceItems}\nLeveled lists: {report.LeveledListsOverridden}", Title);
             generated = true;
         }, kind: ProgressKind.Generation);
-        if (generated) Close();
+        if (generated && !_closing) Close();
     }
 
     private async Task<GenerationPreview> CreateAndCachePreview(ProgressKind kind = ProgressKind.Preview)
@@ -558,7 +514,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return preview;
     }
 
-    private Dictionary<string, PatchPolicy> CurrentPolicies() =>
+    internal Dictionary<string, PatchPolicy> CurrentPolicies() =>
         // Hidden plugins must not require a review decision. Keep their saved
         // decisions, however: a plugin with only direct script equipment can
         // still have productive distribution despite having no list items.
@@ -579,17 +535,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return result;
     }
 
-    public bool CanDeleteProfile => _settings.Profiles.Count > 1;
-
-    private bool ProfileActionsBlocked => IsBusyVisual || IsRescanning || _scanRefreshInProgress;
+    internal bool OperationInProgress => IsBusyVisual || _scanRefreshInProgress;
+    // True while a close request is past the operation check: WPF refuses Close() then.
+    private bool _closing;
+    // True while the engine writes and installs a generation's files (several moves).
+    internal bool WritingOutput { get; private set; }
+    // The last scan failed; its error box has already explained why.
+    private bool _scanFailed;
+    private bool ProfileActionsBlocked => OperationInProgress;
 
     private void ManageProfile(object sender, RoutedEventArgs e)
     {
         if (ProfileActionsBlocked) return;
         var action = Enum.Parse<ProfileAction>((string)((System.Windows.Controls.Button)sender).Tag);
-        if (action == ProfileAction.Delete && !CanDeleteProfile) return;
-        var dialog = new ProfileActionDialog(action, _settings.ProfileName, action == ProfileAction.Delete ? null
-            : name => SettingsStore.ValidateProfileName(_settings, name, rename: action == ProfileAction.Rename)) { Owner = this };
+        var dialog = new ProfileActionDialog(action, _settings.ProfileName,
+            name => SettingsStore.ValidateProfileName(_settings, name)) { Owner = this };
         if (dialog.ShowDialog() == true) ApplyProfileAction(action, dialog.AcceptedName);
     }
 
@@ -600,8 +560,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             case ProfileAction.New: SettingsStore.NewProfile(_settings, name); break;
             case ProfileAction.Duplicate: SettingsStore.DuplicateProfile(_settings, name); break;
-            case ProfileAction.Rename: SettingsStore.RenameProfile(_settings, name); break;
-            case ProfileAction.Delete: SettingsStore.DeleteProfile(_settings); break;
         }
         RefreshSelectedProfile();
         return true;
@@ -612,36 +570,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RefreshProfileNames();
         _profileName = _settings.ProfileName;
         Changed(nameof(ProfileName));
-        Changed(nameof(CanDeleteProfile));
         EnsureCurrentProviderOptions();
-        Changed(nameof(DistributionTarget));
         Changed(nameof(AllowOtherMaterialRoutes));
         Changed(nameof(BroadUnmatchedDistribution));
         Changed(nameof(ResolveLeveledListConflicts));
         Changed(nameof(KeepUndistributedVariants));
-        Changed(nameof(WarningListEntries));
         _scan = null;
         DiscardSnapshot();
         Plugins.Clear();
         Items.Clear();
         SpecializedItems.Clear();
         Enchantments.Clear();
-        Summary = $"Profile '{ProfileName}' loaded with origins {ProviderSummary()}.";
         SaveSettings();
-        RequestScanRefresh("profile", ScanRefreshScope.Full);
-    }
-
-    internal void SetSelectedPlugins(IEnumerable<PluginDecision> rows, PatchPolicy policy)
-    {
-        foreach (var row in rows) row.Policy = policy;
-        SaveDecisions();
+        _discoveryOwed = true;
+        RequestScanRefresh("profile");
+        _ = RefreshLoadOrder(discoverOnly: true);
     }
 
     internal void SetSelectedItems(IEnumerable<CandidateItem> rows, bool selected)
     {
         foreach (var item in rows)
         {
-            if (!item.Eligible && selected) continue;
+            // Include skips the rows the engine's rule will not select, as a tick there does not stick.
+            if (selected && !EngineSelection(item, true)) continue;
             if (selected == DefaultSelected(item)) _settings.CurrentProfile.ItemOverrides.Remove(item.FormKey);
             else _settings.CurrentProfile.ItemOverrides[item.FormKey] = selected;
             _suppressItemEvents = true;
@@ -649,25 +600,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _suppressItemEvents = false;
         }
         SaveSettings();
-        UpdateSummary();
         InvalidatePreview("item inclusion changed");
     }
 
-    internal void ClearItemOverrides(IEnumerable<CandidateItem> rows)
-    {
-        _suppressItemEvents = true;
-        foreach (var item in rows)
-        {
-            _settings.CurrentProfile.ItemOverrides.Remove(item.FormKey);
-            item.Selected = DefaultSelected(item);
-        }
-        _suppressItemEvents = false;
-        SaveSettings();
-        UpdateSummary();
-        InvalidatePreview("item inclusion reset");
-    }
-
-    private void PluginChanged(object? sender, PropertyChangedEventArgs e)
+    internal void PluginChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (sender is not PluginDecision row || e.PropertyName != nameof(PluginDecision.Policy)) return;
         StorePolicy(row);
@@ -685,11 +621,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ItemsView.Refresh();
         SpecializedItemsView.Refresh();
         SaveSettings();
-        UpdateSummary();
         InvalidatePreview("plugin distribution rule changed");
     }
 
-    private void ItemChanged(object? sender, PropertyChangedEventArgs e)
+    internal void ItemChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (_suppressItemEvents || sender is not CandidateItem item) return;
         if (e.PropertyName == nameof(CandidateItem.MaterialFamily) && item.MaterialFamilyChoices.Count > 1)
@@ -728,20 +663,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (authorValue) _settings.CurrentProfile.SpecializedLootOverrides.Remove(item.FormKey);
             else _settings.CurrentProfile.SpecializedLootOverrides[item.FormKey] = item.SpecializedMode;
             item.HasSpecializedOverride = !authorValue;
+            ShowSelection(item);
             SaveSettings(); InvalidatePreview("specialized distribution choice changed"); return;
         }
         if (e.PropertyName != nameof(CandidateItem.Selected)) return;
-        if (!item.Eligible && item.Selected)
+        // A tick the engine's rule will not honour does not stick and saves nothing: the item is
+        // ineligible, or in no loot list and not following script distribution. The row's
+        // evidence (Patch and Base distribution) says why.
+        if (item.Selected && !EngineSelection(item, true))
         {
-            _suppressItemEvents = true;
-            item.Selected = false;
-            _suppressItemEvents = false;
+            ShowSelection(item);
             return;
         }
         if (item.Selected == DefaultSelected(item)) _settings.CurrentProfile.ItemOverrides.Remove(item.FormKey);
         else _settings.CurrentProfile.ItemOverrides[item.FormKey] = item.Selected;
         SaveSettings();
-        UpdateSummary();
         InvalidatePreview("item inclusion changed");
     }
 
@@ -755,6 +691,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _settings.CurrentProfile.SpecializedLootOverrides.Remove(item.FormKey);
                 item.HasSpecializedOverride = false;
                 item.SpecializedMode = item.RecommendedSpecializedMode;
+                ShowSelection(item);
             }
         }
         finally { _suppressItemEvents = false; }
@@ -779,7 +716,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SaveSettings(); RequestScanRefresh("material family");
     }
 
-    private void EnchantmentChanged(object? sender, PropertyChangedEventArgs e)
+    internal void EnchantmentChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (_suppressEnchantmentEvents || sender is not EnchantmentSelectionOption enchantment
             || e.PropertyName != nameof(EnchantmentSelectionOption.IsSelected)) return;
@@ -819,18 +756,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RequestScanRefresh("enchantment selection");
     }
 
-    private bool DefaultSelected(CandidateItem item)
+    // The engine's selection of the item under its plugin's rule, given the user's choice
+    // (null: none). Every selected state the window shows or saves comes from here.
+    private bool EngineSelection(CandidateItem item, bool? choice)
     {
-        if (!item.Eligible) return false;
         var policy = Plugins.FirstOrDefault(x => x.Plugin.Equals(item.Plugin, StringComparison.OrdinalIgnoreCase))?.Policy ?? PatchPolicy.Review;
-        // Author inclusions are decided at Scan; an exclusion made since then waits for the rescan.
-        if (item.AuthorInclude is { } include && !(include && policy == PatchPolicy.Exclude))
-            return include && (item.AlreadyDistributed || item.SpecializedMode == SpecializedLootMode.ScriptDistribution);
-        return policy switch
-        {
-            PatchPolicy.ExistingDistribution => item.AlreadyDistributed,
-            _ => false
-        };
+        // Author inclusions are decided at Scan, where the effective profile hands them to the
+        // engine as item choices; an exclusion made since then waits for the rescan.
+        var author = item.AuthorInclude is { } include && !(include && policy == PatchPolicy.Exclude) ? include : (bool?)null;
+        return PatcherEngine.Selection(item, policy, choice ?? author);
+    }
+
+    // The engine's selection when the user has made no choice for the item.
+    internal bool DefaultSelected(CandidateItem item) => EngineSelection(item, null);
+
+    // Shows the engine's selection with the user's saved choice on the row.
+    private void ShowSelection(CandidateItem item)
+    {
+        var suppressed = _suppressItemEvents;
+        _suppressItemEvents = true;
+        item.Selected = EngineSelection(item, _settings.CurrentProfile.ItemOverrides.TryGetValue(item.FormKey, out var choice) ? choice : null);
+        _suppressItemEvents = suppressed;
     }
 
     private void SaveDecisions()
@@ -856,12 +802,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     internal event Action? RowsReplaced;
     internal void ReplaceRows(Action replace) { RowsReplacing?.Invoke(); replace(); RowsReplaced?.Invoke(); }
 
-    // After a scan, asks about saved choices that differ from the rules file. The first
-    // scan runs before this window is shown; the prompt then waits until it appears.
-    private bool _authorPromptPending;
+    // After a scan, asks about saved choices that differ from the rules file.
     private bool AskAuthorConflicts()
     {
-        if (!IsVisible) { _authorPromptPending = true; return false; }
         if (_snapshot is null || PatcherEngine.AuthorOverlayOf(_snapshot) is not { } overlay) return false;
         var conflicts = AuthorDefaults.Unanswered(_settings.CurrentProfile, overlay);
         if (conflicts.Count == 0) return false;
@@ -959,9 +902,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ProviderList.SelectedItem = dragged;
         SaveProviderOrder();
         SaveSettings();
-        UpdateSummary();
-        // Origin priority decides overlap recommendations; refresh the review rows now
-        // (a reselection on the loaded analysis) rather than only at the next preview.
+        // Origin priority decides overlap recommendations, so the review rows are out of date.
         RequestScanRefresh("enchantment-origin priority");
         e.Handled = true;
     }
@@ -979,28 +920,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         _settings.CurrentProfile.EnchantmentProviderOrder = Providers.Select(x => x.Plugin)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        _settings.CurrentProfile.ProviderOrderMigrated = true;
-        _settings.CurrentProfile.LegacyDistributionProviderPlugins = null;
-    }
-
-    private string ProviderSummary() => _settings.CurrentProfile.EnchantmentProviderPlugins.Count == 0
-        ? "none" : string.Join(", ", _settings.CurrentProfile.EnchantmentProviderPlugins);
-
-    private void UpdateSummary()
-    {
-        if (_scan is null) return;
-        Summary = $"{_scan.ActivePluginCount} active · origins {ProviderSummary()} · {Enchantments.Count(x => x.IsSelected)}/{Enchantments.Count} enchantments · {_scan.Plugins.Count} equipment plugins · {Items.Count(x => x.Eligible)} eligible · {Items.Count(x => x.Selected)} selected";
     }
 
     private bool IsPluginEnabledForReview(string plugin) => Plugins.Any(row =>
         row.Plugin.Equals(plugin, StringComparison.OrdinalIgnoreCase)
         && row.Policy == PatchPolicy.ExistingDistribution);
 
-    private bool IsPluginEnabledForSpecializedReview(string plugin) => Plugins.Any(row =>
-        row.Plugin.Equals(plugin, StringComparison.OrdinalIgnoreCase)
-        && row.Policy == PatchPolicy.ExistingDistribution);
-
-    private bool FilterItem(object value)
+    internal bool FilterItem(object value)
     {
         if (value is not CandidateItem item || !IsPluginEnabledForReview(item.Plugin)) return false;
         // Already-enchanted records can never be patch sources; keep them out of the item list.
@@ -1028,118 +954,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
     private ReviewWindow? _reviewWindow;
-    private async void OpenReview(object sender, RoutedEventArgs e)
+    internal async void OpenReview(object sender, RoutedEventArgs e)
     {
         if (_reviewWindow is not null) { _reviewWindow.Activate(); return; }
-        if (!await FlushPendingScanAsync("Patch Review opened"))
-        {
-            WpfMessageBox.Show("Wait for the automatic scan to finish. Check the Data folder and selected origins if it has not started.", Title);
-            return;
-        }
+        // Rows out of date open at once with the update button; only a first opening scans.
+        if (_scan is null && !await FlushPendingScanAsync()) return;
         RegisterReviewWindow(new ReviewWindow(this) { Owner = this }).Show();
     }
 
     internal ReviewWindow RegisterReviewWindow(ReviewWindow window)
     {
         _reviewWindow = window;
-        window.Closed += async (_, _) =>
-        {
-            if (ReferenceEquals(_reviewWindow, window)) _reviewWindow = null;
-            await FlushPendingScanAsync("Patch Review closed");
-        };
+        window.Closed += (_, _) => { if (ReferenceEquals(_reviewWindow, window)) _reviewWindow = null; };
         return window;
-    }
-
-    private void ShowPreview(GenerationPreview preview)
-    {
-        PreviewDetails = FormatPreview(preview);
-        PreviewReportDetails = FormatPreviewReport(preview);
-    }
-
-    private static string FormatPreview(GenerationPreview preview)
-    {
-        static string FirstNames(IEnumerable<string> values, int limit)
-        {
-            var names = values.ToArray();
-            return string.Join(", ", names.Take(limit)) + (names.Length > limit ? $" (+{names.Length - limit} more)" : "");
-        }
-        var text = new StringBuilder();
-        text.AppendLine($"Output: {OutputChoices(preview)}; chosen when you generate");
-        text.AppendLine($"Equipment: {preview.SelectedSourceItems:N0} selected; {preview.SkippedSelectedItems:N0} skipped.");
-        text.AppendLine($"Variants: {preview.Variants:N0} new records, {preview.ReusedVariants:N0} reused.");
-        text.AppendLine($"Undistributed combinations: {preview.UndistributedVariants:N0}; new records without loot routes are {(preview.KeepUndistributedVariants ? "retained and remain absent from loot" : "omitted")}.");
-        text.AppendLine($"Leveled lists: {preview.TargetLists:N0} affected; {preview.GeneratedSublists:N0} new sublists.");
-        text.AppendLine($"Enchantments: {preview.EnabledEnchantments:N0} enabled. Origin priority: {FirstNames(preview.EnchantmentProviderPlugins, 4)}.");
-        if (preview.ResolveLeveledListConflicts)
-            text.AppendLine($"Conflict resolution: {preview.ConflictRestoredEntries:N0} entries restored in {preview.ConflictResolvedLists:N0} lists.");
-        if (preview.IdentityChanged) text.AppendLine("Record identities changed since the previous output; generation requires confirmation.");
-        if (preview.Warnings.Count > 0)
-        {
-            text.AppendLine().AppendLine($"Warnings ({preview.Warnings.Count:N0}):");
-            foreach (var warning in preview.Warnings.Take(5))
-            {
-                var line = warning.Replace('\r', ' ').Replace('\n', ' ');
-                text.AppendLine("• " + (line.Length > 240 ? line[..240] + "…" : line));
-            }
-            if (preview.Warnings.Count > 5) text.AppendLine($"{preview.Warnings.Count - 5:N0} more warnings in the full report.");
-        }
-        if (preview.Lists.Count > 0)
-        {
-            text.AppendLine().AppendLine("Largest resulting lists:");
-            foreach (var list in preview.Lists.OrderByDescending(x => x.After).Take(5))
-                text.AppendLine($"{list.EditorId}: {list.Before:N0} + {list.Added:N0} = {list.After:N0}{(list.GeneratedSublists > 0 ? $"; split into {list.GeneratedSublists:N0} sublists" : "")}{(list.OverWarningLimit ? " (size warning)" : "")}");
-        }
-        text.AppendLine().Append("Expand the full report for all warnings, list changes and per-item destinations.");
-        return text.ToString();
-    }
-
-    private static string FormatPreviewReport(GenerationPreview preview)
-    {
-        var text = new StringBuilder();
-        text.AppendLine($"Origins / priority   : {string.Join(" → ", preview.EnchantmentProviderPlugins)}");
-        text.AppendLine($"Enabled enchantments : {preview.EnabledEnchantments}");
-        text.AppendLine($"Strict subtype matching: {(preview.StrictSubtypeMatching ? "enabled" : "disabled")}");
-        text.AppendLine($"Broad unmatched fallback: {(preview.BroadUnmatchedDistribution ? "enabled" : "disabled")}");
-        text.AppendLine($"LVLI conflict resolution: {(preview.ResolveLeveledListConflicts ? "enabled" : "disabled")} ({preview.ConflictResolvedLists} lists, {preview.ConflictRestoredEntries} restored entries)");
-        text.AppendLine($"Keep undistributed variants: {(preview.KeepUndistributedVariants ? "enabled" : "disabled")}");
-        text.AppendLine($"Selected source items : {preview.SelectedSourceItems}");
-        text.AppendLine($"Generated variants    : {preview.Variants}");
-        text.AppendLine($"Reused variants       : {preview.ReusedVariants}");
-        text.AppendLine($"Undistributed variants: {preview.UndistributedVariants}");
-        text.AppendLine($"Generated sublists    : {preview.GeneratedSublists}");
-        text.AppendLine($"Source-item pools    : {preview.FallbackSublists}");
-        text.AppendLine($"Output choices        : {OutputChoices(preview)}");
-        text.AppendLine($"Target leveled lists  : {preview.TargetLists}");
-        text.AppendLine($"Output names          : {string.Join(", ", preview.OutputNames)}");
-        text.AppendLine($"Identity fingerprint  : {preview.Fingerprint}");
-        text.AppendLine($"Changed since output  : {(preview.IdentityChanged ? "YES" : "no")}");
-        if (preview.SkippedSelectedItems > 0) text.AppendLine($"Selected but skipped: {preview.SkippedSelectedItems}");
-        if (preview.FallbackConnections.Count > 0)
-        {
-            text.AppendLine().AppendLine("Source-item pool connections:");
-            foreach (var connection in preview.FallbackConnections) text.AppendLine("  " + connection);
-        }
-        if (preview.Warnings.Count > 0)
-        {
-            text.AppendLine().AppendLine("Warnings:");
-            foreach (var warning in preview.Warnings) text.AppendLine("  " + warning);
-        }
-        if (preview.Information.Count > 0)
-        {
-            text.AppendLine().AppendLine("Information:");
-            foreach (var information in preview.Information) text.AppendLine("  " + information);
-        }
-        text.AppendLine().AppendLine("Leveled-list impact (largest first):");
-        foreach (var list in preview.Lists.OrderByDescending(x => x.After))
-            text.AppendLine($"  {list.Before,3} + {list.Added,3} = {list.After,3}  {list.EditorId}  [{list.FormKey}]{(list.GeneratedSublists > 0 ? $" → {list.EntriesAfterSplitting} parent entries, {list.GeneratedSublists} sublists" : "")}{(list.OverWarningLimit ? "  WARNING" : "")}");
-        text.AppendLine().AppendLine("Per-item archetypes and permitted destinations:");
-        foreach (var item in preview.Placements)
-        {
-            text.AppendLine($"{item.Name} [{item.Source}] — {item.Family}; {item.Variants} variants");
-            text.AppendLine($"  Enchantment archetype: {item.Archetype}");
-            foreach (var destination in item.Destinations) text.AppendLine("  Destination: " + destination);
-        }
-        return text.ToString();
     }
 
     // Every choice invalidates the preview. The snapshot checks its own analysis
@@ -1150,8 +977,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         foreach (var item in Items) item.ClearPlacementPreview();
         Changed(nameof(IsPreviewCurrent));
         Changed(nameof(PreviewStateText));
-        if (_previewCache.Preview is null && _scan is not null)
-            PreviewDetails = "Choose Generate Patch to calculate output files, variant counts, and leveled-list growth before confirming generation.";
     }
 
     private void EnsureCurrentProviderOptions()
@@ -1187,7 +1012,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ProfileNames.Add(name);
     }
 
-    private async Task Busy(Func<Task> operation, ProgressKind kind = ProgressKind.Preview)
+    // Returns false when the operation failed. The user sees its message when the session log
+    // keeps the full exception, and all of it otherwise.
+    internal async Task<bool> Busy(Func<Task> operation, ProgressKind kind = ProgressKind.Preview)
     {
         var review = _reviewWindow;
         var reviewWasEnabled = review?.IsEnabled == true;
@@ -1199,12 +1026,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             OperationProgressPercent = kind is ProgressKind.Scan or ProgressKind.Generation ? 0 : null;
             SaveDecisions();
             await operation();
+            return true;
         }
         catch (Exception ex)
         {
             SessionRuntime.Log(ex.ToString());
-            Status = "Failed: " + ex.Message;
-            WpfMessageBox.Show(ex.ToString(), Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            Status = "Failed: " + ex.Message.Split('\n')[0];
+            WpfMessageBox.Show(SessionRuntime.ShownText(ex), Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
         finally
         {

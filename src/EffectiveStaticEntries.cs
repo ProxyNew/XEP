@@ -11,10 +11,10 @@ public static partial class PatcherEngine
 {
     // Proposed positions retain admission's accounting, including positions which
     // the writer may suppress when they reference reused equipment.
-    private sealed record ProvisionalCapacityReservation(FormKey List, string EditorId,
+    internal sealed record ProvisionalCapacityReservation(FormKey List, string EditorId,
         int Before, int ProposedEntries, int GeneratedSublists, int EntriesAfterSplitting);
 
-    private sealed class StaticCapacityReservations(IEnumerable<ProvisionalCapacityReservation> reservations)
+    internal sealed class StaticCapacityReservations(IEnumerable<ProvisionalCapacityReservation> reservations)
     {
         // Built several times per plan and read a few times: a frozen table costs more to build than it saves.
         private readonly Dictionary<FormKey, ProvisionalCapacityReservation> lists = reservations.ToDictionary(r => r.List);
@@ -23,12 +23,12 @@ public static partial class PatcherEngine
         public ProvisionalCapacityReservation? ReservationFor(FormKey key) => lists.GetValueOrDefault(key);
     }
 
-    private readonly record struct StaticEntryReference(FormKey Existing, int? GeneratedOccurrence = null);
+    internal readonly record struct StaticEntryReference(FormKey Existing, int? GeneratedOccurrence = null);
 
-    private sealed class ProjectedStaticEntry
+    internal sealed class ProjectedStaticEntry
     {
         private readonly LeveledItemEntry? authored;
-        private readonly short level, count;
+        internal readonly short level, count;
         public ProjectedStaticEntry(ILeveledItemEntryGetter payload, StaticEntryReference reference)
         { authored = payload.DeepCopy(); Reference = reference; }
         public ProjectedStaticEntry(ParentEntry parent, StaticEntryReference reference)
@@ -43,15 +43,15 @@ public static partial class PatcherEngine
         { Data = new() { Level = level, Count = count, Reference = new FormLink<IItemGetter>(Reference.Existing) } };
     }
 
-    private sealed record StaticOverflowBranch(short Level, StaticOverflowNode Child);
-    private sealed record StaticOverflowNode(ImmutableArray<ProjectedStaticEntry> Leaves,
+    internal sealed record StaticOverflowBranch(short Level, StaticOverflowNode Child);
+    internal sealed record StaticOverflowNode(ImmutableArray<ProjectedStaticEntry> Leaves,
         ImmutableArray<StaticOverflowBranch> Branches)
     {
         public int ChildCount => Branches.Sum(b => 1 + b.Child.ChildCount);
         public int EntryCount => Leaves.Length + Branches.Length;
     }
 
-    private sealed class StaticListProjection(ProvisionalCapacityReservation reservation,
+    internal sealed class StaticListProjection(ProvisionalCapacityReservation reservation,
         ImmutableArray<ProjectedStaticEntry> entries, ImmutableArray<ProjectedStaticEntry> writingEntries = default)
     {
         public ProvisionalCapacityReservation ProvisionalCapacityReservation { get; } = reservation;
@@ -80,7 +80,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private sealed class StaticEntryProjection(ImmutableArray<StaticListProjection> projections,
+    internal sealed class StaticEntryProjection(ImmutableArray<StaticListProjection> projections,
         StaticCapacityReservations reservations)
     {
         public ImmutableArray<StaticListProjection> ChangedLists { get; } = projections;
@@ -99,7 +99,7 @@ public static partial class PatcherEngine
             ? list.Tree.ChildCount == 0 ? list.EffectiveCount : list.Tree.EntryCount : null;
     }
 
-    private static class EffectiveStaticEntries
+    internal static class EffectiveStaticEntries
     {
         // Capture the current planning instant; never retain mutable catalog or
         // ordered-plan inputs. A caller must project again after changing them.
@@ -124,7 +124,7 @@ public static partial class PatcherEngine
             return additions;
         }
 
-        private static StaticCapacityReservations Reserve(Catalog catalog, IReadOnlyDictionary<FormKey, Dictionary<short, int>> additions)
+        internal static StaticCapacityReservations Reserve(Catalog catalog, IReadOnlyDictionary<FormKey, Dictionary<short, int>> additions)
         {
             var reservations = additions.Keys.Concat(catalog.Fallbacks.Keys)
                 .Concat(catalog.ConflictResolutions.Keys).Concat(catalog.BundleSlotOwners).Distinct().Select(key =>
@@ -191,7 +191,7 @@ public static partial class PatcherEngine
                 {
                     Compose(catalog, key, entries, name, usedNames);
                 }
-                catch (InvalidDataException ex) { problems[key] = ex.Message.Replace(" No output was installed.", "", StringComparison.Ordinal); }
+                catch (RouteRefusalException refusal) { problems[key] = refusal.Message; }
             }
             return problems;
         }
@@ -211,7 +211,11 @@ public static partial class PatcherEngine
                 return (effective, physical, default);
             // Reserve names before other generated records can occupy them. The
             // writer allocates overflow children in this same postorder sequence.
-            var split = StaticListProjection.Partition(physical);
+            // An unsplittable list (an entry without DATA, more than 255 levels) is
+            // a fact about that list: placements into it are refused, as under LLOS.
+            StaticOverflowNode split;
+            try { split = StaticListProjection.Partition(physical); }
+            catch (InvalidDataException unsplittable) { throw new RouteRefusalException(unsplittable.Message); }
             var names = Enumerable.Range(1, split.ChildCount)
                 .Select(i => EditorId($"Sublist_{list.EditorID}_{i}", usedNames)).ToImmutableArray();
             native.ValidateOverflow(key, name, split, names,
@@ -233,7 +237,7 @@ public static partial class PatcherEngine
         public static string? ExistingWritingProblem(Catalog catalog, FormKey key, ImmutableArray<ProjectedStaticEntry> desired)
         {
             try { ExistingPhysical(catalog, key, desired); return null; }
-            catch (InvalidDataException ex) { return ex.Message.Replace(" No output was installed.", "", StringComparison.Ordinal); }
+            catch (RouteRefusalException refusal) { return refusal.Message; }
         }
 
         private static ImmutableArray<ProjectedStaticEntry> ExistingPhysical(Catalog catalog, FormKey key,
@@ -244,7 +248,7 @@ public static partial class PatcherEngine
             return catalog.NativeLists?.ForProjection(key, afterSky, list) ?? afterSky;
         }
 
-        private static (ImmutableArray<ProjectedStaticEntry> Effective, ImmutableArray<ProjectedStaticEntry> Physical)
+        internal static (ImmutableArray<ProjectedStaticEntry> Effective, ImmutableArray<ProjectedStaticEntry> Physical)
             ProjectGenerated(Catalog catalog, ILeveledItemGetter list, ImmutableArray<ProjectedStaticEntry> desired, string? name)
         {
             var sky = catalog.NativeLists?.ProjectGeneratedForProjection(list, desired, name) ?? (desired, desired);
@@ -256,14 +260,15 @@ public static partial class PatcherEngine
                 // that intermediate state using its existing composition proof.
                 var (_, afterSky) = llos.ProjectGenerated(list, sky.Item1);
                 var composed = catalog.NativeLists?.ProjectGeneratedForProjection(list, afterSky, name) ?? (afterSky, afterSky);
-                if (composed.Item1.Length != afterSky.Length || !composed.Item1.Zip(afterSky).All(p => SkyPatcherLists.SameProjected(p.First, p.Second)))
-                    throw new InvalidDataException($"LLOS generated list {list.EditorID} [{list.FormKey}]: SkyPatcher cannot reproduce the entries required before LLOS. No output was installed.");
+                // The same array pairs each entry with itself, which SameProjected always accepts.
+                if (composed.Item1 != afterSky && (composed.Item1.Length != afterSky.Length || !composed.Item1.Zip(afterSky).All(p => SkyPatcherLists.SameProjected(p.First, p.Second))))
+                    throw new RouteRefusalException($"LLOS generated list {list.EditorID} [{list.FormKey}]: SkyPatcher cannot reproduce the entries required before LLOS.");
                 return (sky.Item1, composed.Item2);
             }
             var (_, physical) = llos.ProjectGenerated(list, desired);
             if (physical.SequenceEqual(desired)) return sky;
             if (!sky.Item2.SequenceEqual(desired))
-                throw new InvalidDataException($"LLOS generated list {list.EditorID} [{list.FormKey}]: SkyPatcher and LLOS would both change it; their native ordering is unverified. No output was installed.");
+                throw new RouteRefusalException($"LLOS generated list {list.EditorID} [{list.FormKey}]: SkyPatcher and LLOS would both change it; their native ordering is unverified.");
             return (sky.Item1, physical);
         }
 
@@ -286,27 +291,36 @@ public static partial class PatcherEngine
                 entriesByList[resolution.List] = Baseline((catalog.SpecializedRewrites.GetValueOrDefault(resolution.List)
                     ?? catalog.LlosLists?.BaselineFor(resolution.List) ?? catalog.NativeLists?.BaselineFor(resolution.Resolved) ?? resolution.Resolved).Entries ?? []);
             var copies = catalog.SpecializedCloneOriginals.ToLookup(x => x.Value, x => x.Key);
+            HashSet<StaticEntryReference> References(FormKey key) => referencesByList.TryGetValue(key, out var references)
+                ? references : referencesByList[key] = Entries(key).Select(e => e.Reference).ToHashSet();
+            var planTargets = new HashSet<FormKey>();
             for (var occurrence = 0; occurrence < orderedPlans.Length; occurrence++)
             {
                 var plan = orderedPlans[occurrence];
+                planTargets.Clear();
                 var reference = plan.Reused is { } reused ? new StaticEntryReference(reused.FormKey)
                     : new StaticEntryReference(FormKey.Null, occurrence);
-                foreach (var parent in plan.Parents.Select(p => p with { List = MaterialContents(p.List, catalog) }))
-                foreach (var target in InheritedCopyTargets(parent.List, copies, catalog).Prepend(parent.List))
+                // Millions of parents: no copy of the parent, and no iterators for a list without copies.
+                foreach (var parent in plan.Parents)
                 {
-                    var entries = Entries(target);
-                    if (!referencesByList.TryGetValue(target, out var references))
-                        referencesByList[target] = references = entries.Select(e => e.Reference).ToHashSet();
-                    if (!references.Add(reference) && !plan.PreserveParentMultiplicity) continue;
-                    entries.Add(new(parent, reference));
+                    var list = MaterialContents(parent.List, catalog);
+                    Add(list);
+                    if (copies.Contains(list))
+                        foreach (var target in InheritedCopyTargets(list, copies, catalog)) Add(target);
+                    void Add(FormKey target)
+                    {
+                        var entries = Entries(target);
+                        // An occurrence is unique to its plan: only a reused item can be in the list before its plan.
+                        if ((plan.Reused is null ? planTargets.Add(target) : References(target).Add(reference))
+                            || plan.PreserveParentMultiplicity) entries.Add(new(parent, reference));
+                    }
                 }
             }
             foreach (var edge in catalog.FallbackEdges)
             {
-                var inherited = !InheritableEdge(edge, catalog)
-                    ? [] : InheritedCopyTargets(edge.Parent.List, copies, catalog);
-                foreach (var target in inherited.Prepend(edge.Parent.List))
-                    Entries(target).Add(new(edge.Parent, new(edge.Child)));
+                Entries(edge.Parent.List).Add(new(edge.Parent, new(edge.Child)));
+                if (copies.Contains(edge.Parent.List) && InheritableEdge(edge, catalog))
+                    foreach (var target in InheritedCopyTargets(edge.Parent.List, copies, catalog)) Entries(target).Add(new(edge.Parent, new(edge.Child)));
             }
             foreach (var key in catalog.Fallbacks.Keys) Entries(key);
             // A bundle whose slot was rewritten in place changes without any addition.
@@ -317,7 +331,8 @@ public static partial class PatcherEngine
             if (catalog.NativeLists?.HasEditorIdRules == true)
             {
                 var used = new HashSet<string>(catalog.NativeLists.ReferencedEditorIds, StringComparer.OrdinalIgnoreCase);
-                foreach (var key in catalog.Fallbacks.Keys.Order()) generatedNames[key] = EditorId(catalog.Lists[key].EditorID ?? "", used);
+                foreach (var key in catalog.Fallbacks.Keys.Order(FormKeyOrder.Instance))
+                    generatedNames[key] = EditorId(catalog.Lists[key].EditorID ?? "", used);
             }
             return (entriesByList, generatedNames);
         }

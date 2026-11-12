@@ -9,17 +9,14 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record RuntimeAddPayload(FormKey Payload, string Evidence);
-    private sealed record RuntimePropertyBinding(string? Problem, bool MayRetarget)
+    internal sealed record RuntimeAddPayload(FormKey Payload, string Evidence);
+    internal sealed record RuntimePropertyBinding(string? Problem, bool MayRetarget)
     {
         public string Evidence { get; init; } = "";
-        public RuntimeFrameFailure? Failure { get; init; }
         public string[] CoveredInstanceIdentities { get; init; } = [];
         // Slice proofs only: changes to a shared list by another patched mod that its own analysis cannot resolve.
         public string[] Warnings { get; init; } = [];
     }
-    private sealed record RuntimeFrameFailure(string CallerIdentity, string Property, string Function, string Line);
-    private sealed record RuntimeBindingCheck(string OwnerIdentity, string Property, bool Receiver, RuntimePropertyBinding Result);
     private static readonly HashSet<string> FootprintListMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         "AddForm", "Revert", "RemoveAddedForm", "SetChanceNone", "SetChanceGlobal", "SetNthLevel", "SetNthCount",
@@ -29,7 +26,7 @@ public static partial class PatcherEngine
     // A mutable EMPTY competitor may remain empty for this source union. Prove
     // all authored and all possible added outcomes, irrespective of invocation
     // timing/repetition. Never promote a runtime edge into source availability.
-    private static string? RuntimeDisjointSourceBranch(FormKey root, IReadOnlySet<FormKey> sources, Catalog catalog,
+    internal static string? RuntimeDisjointSourceBranch(FormKey root, IReadOnlySet<FormKey> sources, Catalog catalog,
         out string evidence)
     {
         evidence = "";

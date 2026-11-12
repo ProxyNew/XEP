@@ -32,34 +32,46 @@ internal static class ReferenceStatus
             or IArtObjectGetter or IAcousticSpaceGetter or ISoundMarkerGetter or IIdleMarkerGetter;
 }
 
-// Loaded-record lookups shared by native input captures (SkyPatcher, LLOS).
-// Each capture keeps its own identifier syntax; this owns plugin, winner and
-// native EditorID cache facts so they are interpreted once.
-internal sealed class NativeFormResolver(IReadOnlyList<ISkyrimModGetter> mods,
-    Func<IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>> loadWinners)
+// Loaded-record lookups shared by the framework input captures (SkyPatcher, LLOS, KID, SPID, CID, CDF).
+// Each capture keeps its own identifier syntax; this owns plugin, winner and native EditorID cache facts
+// so they are interpreted once. The winners are the scan's load-order winners; the EditorID index is an
+// input structure built here, once per scan, when the scan has a configuration that can name a record.
+internal sealed class NativeFormResolver
 {
-    private readonly Dictionary<string, ISkyrimModGetter> plugins = mods.ToDictionary(m => m.ModKey.FileName.String, StringComparer.OrdinalIgnoreCase);
-    private IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>? winners;
-    private Dictionary<string, IMajorRecordGetter[]>? editorIds;
+    internal readonly Dictionary<string, ISkyrimModGetter> plugins;
+    private readonly IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners;
+    private readonly Dictionary<string, IMajorRecordGetter[]>? editorIds;
+
+    // names: the EditorIDs LoadOrderWinners collected (load order, then record order); null builds no index.
+    public NativeFormResolver(IReadOnlyList<ISkyrimModGetter> mods,
+        IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners, IEnumerable<(string EditorId, FormKey Key)>? names)
+    {
+        Mods = mods;
+        plugins = mods.ToDictionary(m => m.ModKey.FileName.String, StringComparer.OrdinalIgnoreCase);
+        this.winners = winners;
+        if (names is null) return;
+        using var timing = PhaseTiming.Measure("native.editor-ids");
+        editorIds = names.GroupBy(n => n.EditorId, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key,
+            g => g.Select(n => n.Key).Distinct().Select(key => (IMajorRecordGetter)winners[key].Record).ToArray(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    public IReadOnlyList<ISkyrimModGetter> Mods { get; }
 
     public bool HasPlugin(string name) => plugins.ContainsKey(name);
     public bool TryGetPlugin(string name, out ISkyrimModGetter plugin) => plugins.TryGetValue(name, out plugin!);
 
-    public ISkyrimMajorRecordGetter? Winner(FormKey key)
-    {
-        EnsureWinners();
-        return winners!.TryGetValue(key, out var winner) ? winner.Record : null;
-    }
+    public ISkyrimMajorRecordGetter? Winner(FormKey key) => winners.TryGetValue(key, out var winner) ? winner.Record : null;
 
     // The native name map retains aliases introduced by overrides. Resolve each
     // alias to the winning form, deduplicating its history.
     // An optional filter keeps only the candidates of one record type before ambiguity is judged
-    // (native keyword lookups search the keyword array alone).
-    public (string Status, IMajorRecordGetter? Record) EditorId(string identifier, Func<IMajorRecordGetter, bool>? filter = null)
+    // (native keyword lookups search the keyword array alone). CDF matches a winning record's own
+    // EditorID with case (caseSensitive); the other tools use the native case-insensitive map.
+    // Without an index (the scan has no configuration) nothing is named.
+    public (string Status, IMajorRecordGetter? Record) EditorId(string identifier, Func<IMajorRecordGetter, bool>? filter = null, bool caseSensitive = false)
     {
-        EnsureWinners();
-        editorIds ??= EditorIds();
-        if (!editorIds.TryGetValue(identifier, out var records)) return ("missing-record", null);
+        if (editorIds is null || !editorIds.TryGetValue(identifier, out var records)) return ("missing-record", null);
+        if (caseSensitive) records = records.Where(r => string.Equals(r.EditorID, identifier, StringComparison.Ordinal)).ToArray();
         if (filter is not null) records = records.Where(filter).ToArray();
         if (records.Length == 0) return ("missing-record", null);
         return records.Length != 1 ? ("ambiguous-editorid", null) : ("resolved", records[0]);
@@ -67,23 +79,16 @@ internal sealed class NativeFormResolver(IReadOnlyList<ISkyrimModGetter> mods,
 
     // Every record an EditorID names, for a reference that is ambiguous.
     public IReadOnlyList<IMajorRecordGetter> EditorIdMatches(string identifier)
-    {
-        EnsureWinners();
-        editorIds ??= EditorIds();
-        return editorIds.TryGetValue(identifier, out var records) ? records : [];
-    }
+        => editorIds is not null && editorIds.TryGetValue(identifier, out var records) ? records : [];
 
     public IReadOnlyDictionary<FormKey, IReadOnlySet<FormKey>> KeywordMembers(HashSet<FormKey> requested)
     {
         var members = requested.ToDictionary(k => k, _ => new HashSet<FormKey>());
         if (requested.Count > 0)
-        {
-            EnsureWinners();
-            foreach (var record in winners!.Values.Select(w => w.Record).Where(r => !r.IsDeleted))
+            foreach (var record in winners.Values.Select(w => w.Record).Where(r => !r.IsDeleted))
             if (record is IKeywordedGetter<IKeywordGetter> keyworded)
             foreach (var keyword in keyworded.Keywords ?? [])
                 if (members.TryGetValue(keyword.FormKey, out var items)) items.Add(record.FormKey);
-        }
         return members.ToDictionary(p => p.Key, p => (IReadOnlySet<FormKey>)p.Value).AsReadOnly();
     }
 
@@ -93,27 +98,10 @@ internal sealed class NativeFormResolver(IReadOnlyList<ISkyrimModGetter> mods,
     {
         var result = new Dictionary<FormKey, FormKey[]>();
         if (requested.Count == 0) return result;
-        EnsureWinners();
-        foreach (var record in winners!.Values.Select(w => w.Record).Where(r => !r.IsDeleted))
+        foreach (var record in winners.Values.Select(w => w.Record).Where(r => !r.IsDeleted))
             if (record is IKeywordedGetter<IKeywordGetter> keyworded
                 && (keyworded.Keywords ?? []).Select(k => k.FormKey).Where(requested.Contains).ToArray() is { Length: > 0 } keys)
                 result[record.FormKey] = keys;
         return result;
-    }
-
-    private void EnsureWinners() => winners ??= loadWinners();
-
-    private Dictionary<string, IMajorRecordGetter[]> EditorIds()
-    {
-        using var timing = PhaseTiming.Measure("native.editor-ids");
-        // Read plugins with the same bounded parallelism as the winner index;
-        // merge in load order so alias order and winners stay deterministic.
-        var names = new (string EditorId, FormKey Key)[mods.Count][];
-        void Read(int i) => names[i] = mods[i].EnumerateMajorRecords().Where(r => !string.IsNullOrEmpty(r.EditorID))
-            .Select(r => (r.EditorID!, r.FormKey)).ToArray();
-        if (mods.Distinct(ReferenceEqualityComparer.Instance).Count() != mods.Count) for (var i = 0; i < mods.Count; i++) Read(i);
-        else Parallel.For(0, mods.Count, new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Math.Max(1, Environment.ProcessorCount)) }, Read);
-        return names.SelectMany(n => n).GroupBy(n => n.EditorId, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key,
-            g => g.Select(n => n.Key).Distinct().Select(key => (IMajorRecordGetter)winners![key].Record).ToArray(), StringComparer.OrdinalIgnoreCase);
     }
 }

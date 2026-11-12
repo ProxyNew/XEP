@@ -7,7 +7,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record CountedMerchantRequest(CandidateItem Candidate, SpecializedRoute[] Routes);
+    internal sealed record CountedMerchantRequest(CandidateItem Candidate, SpecializedRoute[] Routes);
     private static void AssessCountedMerchantRoutes(FormKey sourceKey, EquipmentClass cls, bool expandMaterials,
         Catalog catalog, SpecializedAssessment result)
     {
@@ -135,12 +135,6 @@ public static partial class PatcherEngine
         return false;
     }
 
-    private static void BuildCountedMerchantPlans(CandidateItem candidate, Catalog catalog, ProfileSettings profile,
-        PlanningAdditions<VariantPlan> plans, SpecializedRoute[] routes)
-    {
-        if (routes.Length > 0) catalog.CountedMerchantRequests.Add(new(candidate, routes));
-    }
-
     private static void FinalizeCountedMerchantPlans(Catalog catalog, ProfileSettings profile, PlanningAdditions<VariantPlan> plans)
     {
         var rows = catalog.CountedMerchantRequests.SelectMany(request => request.Routes.Select(route =>
@@ -214,7 +208,7 @@ public static partial class PatcherEngine
                 families.Add(sourceKey, family);
                 foreach (var flavor in sourceGroup.Flavors)
                 {
-                    var route = flavor.Select(r => r.Route).OrderBy(r => profile.EnchantmentProviderPlugins.FindIndex(p => p.Equals(r.Template.Enchantment.ModKey.FileName.String, StringComparison.OrdinalIgnoreCase)))
+                    var route = flavor.Select(r => r.Route).OrderBy(r => ProviderRank(profile, r.Template.Enchantment.ModKey))
                         .ThenBy(r => r.Template.Item.FormKey).First();
                     var parent = new ParentEntry(family, flavor.Min(r => r.Route.Destination.Level), 1);
                     if (index.TryGetValue(flavor.Key, out var old))

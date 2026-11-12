@@ -6,7 +6,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed partial record CdfConsumers
+    internal sealed partial record CdfConsumers
     {
         private sealed record CdfErasureScope((FormKey Consumer, FormKey Base, bool Reference)[] Recipients,
             bool EveryContainer = false, bool ReachesUnsafe = false)

@@ -16,7 +16,7 @@ public static partial class PatcherEngine
 {
     // Count is the entry count of the item inside the payload. AtStart marks an insertion made
     // by OnInit of a start-game-enabled quest; it has no source stage.
-    private sealed record ScriptUnlock(FormKey Quest, ushort Stage, short Level, FormKey OriginalTarget, string Evidence, short Count = 1, bool AtStart = false)
+    internal sealed record ScriptUnlock(FormKey Quest, ushort Stage, short Level, FormKey OriginalTarget, string Evidence, short Count = 1, bool AtStart = false)
     {
         // Level includes the payload minimum; the receiver cutoff is determined
         // by the original AddForm entry level before that payload is evaluated.
@@ -26,10 +26,10 @@ public static partial class PatcherEngine
         // ownership belongs to the distributor, never to the guard quest.
         public FormKey OwnerQuest { get; init; }
     }
-    private sealed record RuntimePlacement(FormKey Source, ParentEntry Target, FormKey Child, ScriptUnlock Unlock);
+    internal sealed record RuntimePlacement(FormKey Source, ParentEntry Target, FormKey Child, ScriptUnlock Unlock);
 
     // Test hook: supplies decompiled script text by script name instead of Champollion.
-    private static Func<string, (string? Text, string Evidence)>? ScriptTextOverride = null;
+    internal static Func<string, (string? Text, string Evidence)>? ScriptTextOverride = null;
 
     private static readonly Regex MutationCall = new(@"(?i)\.\s*(AddForm|Revert|RemoveAddedForm|SetChanceNone|SetChanceGlobal|SetNthLevel|SetNthCount)\s*\(", RegexOptions.Compiled);
     private static readonly Regex DirectMutation = new(@"(?i)^\s*(?:(?<recv>\w+)|\(\s*(?<recv>\w+)\s+as\s+(?<cast>\w+)\s*\))\s*\.\s*(?<m>AddForm|Revert|RemoveAddedForm|SetChanceNone|SetChanceGlobal|SetNthLevel|SetNthCount)\s*\((?<args>.*)\)\s*$", RegexOptions.Compiled);
@@ -39,7 +39,7 @@ public static partial class PatcherEngine
     private static readonly Regex Branching =new(@"(?im)^\s*(if|elseif|else|while|return)\b", RegexOptions.Compiled);
 
     // One attached script: its winning quest, its property values on that quest and its decompiled text.
-    private sealed class ScriptInstance
+    internal sealed class ScriptInstance
     {
         public required IQuestGetter Quest { get; init; }
         public required string Name { get; init; }
@@ -47,8 +47,6 @@ public static partial class PatcherEngine
         public int ScriptSlot { get; init; }
         public int AliasSlot { get; init; } = -1;
         public (FormKey Quest, short Alias)? AliasIdentity { get; init; }
-        public IScriptEntryGetter? BindingEntry { get; init; }
-        public string WinningQuestPlugin { get; init; } = "";
         public string? BindingMetadataProblem { get; set; }
         public List<RuntimeObjectHandle> VmadHandles { get; } = [];
         public Dictionary<string, FormKey> Objects { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -82,8 +80,8 @@ public static partial class PatcherEngine
             }
         }
     }
-    private readonly record struct RuntimeObjectHandle(FormKey Record, short Alias, int Index = -1);
-    private sealed record ScriptFunction(string Name, string Kind, string Parameters, string Body, int Start, int End)
+    internal readonly record struct RuntimeObjectHandle(FormKey Record, short Alias, int Index = -1);
+    internal sealed record ScriptFunction(string Name, string Kind, string Parameters, string Body, int Start, int End)
     { public int BodyStart { get; init; } public string ReturnType { get; init; } = ""; }
     // Functions are immutable. Retain their value equality and original hash, but
     // avoid hashing the entire script body on every flow/syntax dictionary lookup.
@@ -101,7 +99,7 @@ public static partial class PatcherEngine
     // Analyze winning VMADs and winning PEX, never script names or mod-specific tables.
     // Every leveled-list call is judged on its own. Detection records every item a proven call adds,
     // whatever its record type; eligibility of those items is decided later by the candidate rules.
-    private static void InitializeAvailability(AppSettings settings, Catalog catalog)
+    internal static void InitializeAvailability(AppSettings settings, Catalog catalog)
     {
         if (catalog.AvailabilityInitialized) return;
         using var timing = PhaseTiming.Measure("availability-scripts");
@@ -109,8 +107,6 @@ public static partial class PatcherEngine
         catalog.AvailabilityInitialized = true;
         var quests = catalog.Mods.SelectMany(m => m.Quests).GroupBy(q => q.FormKey).Select(g => g.Last())
             .Where(q => !q.IsDeleted && q.VirtualMachineAdapter is not null).ToArray();
-        var questWinners = catalog.Mods.SelectMany(m => m.Quests.Select(q => (q.FormKey, m.ModKey)))
-            .GroupBy(p => p.FormKey).ToDictionary(g => g.Key, g => g.Last().ModKey.FileName.String);
         var formLists = catalog.Mods.SelectMany(m => m.FormLists).GroupBy(f => f.FormKey).ToDictionary(g => g.Key, g => g.Last());
 
         // Bounded transitive FLST capabilities, including collection-only
@@ -175,8 +171,7 @@ public static partial class PatcherEngine
             (FormKey Quest, short Alias)? aliasIdentity = null)
         {
             var instance = new ScriptInstance { Quest = quest, Name = script.Name, Alias = aliasSlot >= 0,
-                ScriptSlot = scriptSlot, AliasSlot = aliasSlot, AliasIdentity = aliasIdentity,
-                BindingEntry = script, WinningQuestPlugin = questWinners[quest.FormKey] };
+                ScriptSlot = scriptSlot, AliasSlot = aliasSlot, AliasIdentity = aliasIdentity };
             if (script.Properties.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() != 1))
                 instance.BindingMetadataProblem = "duplicate VMAD property bindings have unproved runtime dispatch";
             foreach (var p in script.Properties)
@@ -225,7 +220,6 @@ public static partial class PatcherEngine
         var all = analysed.Values.SelectMany(x => x).ToList();
         // Resolve winning asset bytes once. Incoming frames decompile only the
         // instances in a completed bounded slice, never the entire raw closure.
-        var wanted = AvailabilityScriptNames(catalog.Mods, RuntimeRecordWinners(catalog));
         ScriptAssets? resolver = null;
         if (ScriptTextOverride is null)
         {
@@ -233,12 +227,12 @@ public static partial class PatcherEngine
             // inputs and builds the catalog; use that result only for identical inputs.
             if (catalog.PrefetchedScriptAssets is { } pending && pending.Data == (settings.DataFolder ?? "")
                 && pending.Order.SequenceEqual(catalog.Mods.Select(m => m.ModKey)))
+                using (PhaseTiming.Measure("availability.assets-wait")) resolver = pending.Work.GetAwaiter().GetResult();
+            if (resolver is null)
             {
-                (HashSet<string> Wanted, ScriptAssets Assets) done;
-                using (PhaseTiming.Measure("availability.assets-wait")) done = pending.Work.GetAwaiter().GetResult();
-                if (done.Wanted.SetEquals(wanted)) resolver = done.Assets;
+                resolver = new ScriptAssets(settings.DataFolder ?? "", catalog.Mods.Select(m => m.ModKey));
+                resolver.DecompileRead(UpFrontScriptNames(catalog.Mods, winningRecords).Concat(QuestHolderScripts(winningRecords)));
             }
-            resolver ??= new ScriptAssets(settings.DataFolder ?? "", catalog.Mods.Select(m => m.ModKey), wanted);
         }
         catalog.PrefetchedScriptAssets = null;
         catalog.ScriptAnalysisWarning = resolver?.AnalysisWarning;
@@ -257,8 +251,7 @@ public static partial class PatcherEngine
                     else { var body = resolver!.Decompile(name, out var detail); value = (body, detail); }
                     value = PrepareRuntimeScript(value); texts[name] = value;
                 }
-                return target.RuntimeHolderAssets[name] = new(value.Text, value.Evidence,
-                    resolver?.DiagnosticEvidence(name) ?? value.Evidence);
+                return target.RuntimeHolderAssets[name] = new(value.Text, value.Evidence);
         }
     }
         catalog.RuntimeHolderAssetResolver = name => HolderAsset(catalog, name);
@@ -281,8 +274,6 @@ public static partial class PatcherEngine
             instance.DiagnosticAssetEvidence = resolver?.DiagnosticEvidence(instance.Name) ?? text.Evidence;
             if (text.Text is not null && instance.Functions.Count == 0) instance.Functions.AddRange(ParseFunctions(text.Text));
         }
-        if (ScriptTextOverride is null)
-                resolver?.Prefetch(all.Select(i => i.Name).Concat(["Quest", "Alias", "ReferenceAlias", "Actor", "ObjectReference", "Debug", "Game", "LeveledItem", "Form", "Keyword", "GlobalVariable"]));
         var scriptsLoaded = 0;
         foreach (var instance in all)
         {
@@ -363,8 +354,10 @@ public static partial class PatcherEngine
         string? BindingClosureProblem(ScriptInstance instance) =>
             boundPropertyCallers.GetValueOrDefault(instance.Quest.FormKey, []).Append(instance)
                 .Select(InstanceClosureProblem).FirstOrDefault(p => p is not null);
-        IEnumerable<FormKey> BindingFrameLists(ScriptInstance instance) =>
-            boundPropertyCallers.GetValueOrDefault(instance.Quest.FormKey, []).Append(instance).SelectMany(ScriptLists).Distinct();
+        // Once per instance: callers and reach are fixed by now, and an AddForm per list property asks again.
+        var frameLists = new Dictionary<ScriptInstance, FormKey[]>();
+        IEnumerable<FormKey> BindingFrameLists(ScriptInstance instance) => frameLists.TryGetValue(instance, out var lists) ? lists
+            : frameLists[instance] = boundPropertyCallers.GetValueOrDefault(instance.Quest.FormKey, []).Append(instance).SelectMany(ScriptLists).Distinct().ToArray();
         // The closures retain raw VMAD/asset evidence, but all selection-sensitive
         // proofs and diagnostics must use the catalog of the current pass.
         // Resolvers this initializer binds to the passes of one analysis prove the same
@@ -382,7 +375,6 @@ public static partial class PatcherEngine
                 var result = runtimeBindings[key] = closureProblem is not null
                     ? new RuntimePropertyBinding("VMAD capability closure is unproved: " + closureProblem, true)
                     : RuntimePropertyFrame(instance, name, receiver, boundPropertyCallers.GetValueOrDefault(instance.Quest.FormKey, []), target);
-                target.RuntimeBindingChecks.Add(new(instance.Identity, name, receiver, result));
                 return result;
             }
             Func<ScriptInstance, string, bool, RuntimePropertyBinding> resolver = Binding;
@@ -694,17 +686,11 @@ public static partial class PatcherEngine
                     if (Regex.IsMatch(payloadName, @"^\w+\s*\["))
                     {
                         var arrayIdentity = FreshRuntimeArrayIdentity(payloadName, instance, function, position, catalog);
-                        catalog.RuntimeLocalArrayIdentities.Add(arrayIdentity);
                         lookup = FreshLocalArrayPayload(arrayIdentity, catalog, out lookupResult);
                         localArrayPayload = true;
                     }
                     else lookup = ConstantRuntimeLookup(payloadName, instance, function, catalog, out lookupResult);
                     lookupBinding = lookupResult;
-                    catalog.RuntimePayloadExpressions.Add(new(instance.Identity, fname, payloadName,
-                        localArrayPayload ? (lookup is not null ? "Fresh local array read" : "Unresolved array expression")
-                            : Regex.IsMatch(payloadName, @"(?i)^Game\s*\.\s*GetFormFromFile\b") ? "Constant native lookup" : "Unresolved expression",
-                        lookup is { } found ? [found.ToString()] : [], true,
-                        lookupResult.Problem, lookupResult.Evidence));
                     if (lookup is null)
                     {
                         catalog.UnresolvedScriptPayloads.UnionWith(ScriptLists(instance));
@@ -718,7 +704,6 @@ public static partial class PatcherEngine
                 if (receiverBinding.Problem is null)
                 {
                     var holderProblem = UnclosedRuntimeHolderProblem([], catalog, target.Value);
-                    catalog.RuntimeHolderChecks.Add(new(instance.Identity, target.Value, holderProblem));
                     if (holderProblem is not null) receiverBinding = new(holderProblem, true);
                 }
                 var payloadBinding = lookupBinding ?? Binding(instance, payloadName, false);
@@ -727,13 +712,15 @@ public static partial class PatcherEngine
                 var literalPayload = literalLevel && literalCount;
                 if (receiverBinding.Problem is not null || payloadBinding.Problem is not null || !literalPayload)
                 {
-                    var reason = receiverBinding.Problem ?? payloadBinding.Problem ?? "positive literal AddForm level/count required";
-                    catalog.RuntimeAddPayloadProblems.TryAdd(target.Value, $"{instance.Label}: {reason}");
+                    // Built once: a frame can hold hundreds of lists.
+                    var reason = $"{instance.Label}: {receiverBinding.Problem ?? payloadBinding.Problem ?? "positive literal AddForm level/count required"}";
+                    var control = $"Runtime AddForm binding is unproved in {instance.Label}";
+                    catalog.RuntimeAddPayloadProblems.TryAdd(target.Value, reason);
                     if (receiverBinding.MayRetarget || payloadBinding.MayRetarget)
                         foreach (var list in BindingFrameLists(instance))
                         {
-                            catalog.RuntimeAddPayloadProblems.TryAdd(list, $"{instance.Label}: {reason}");
-                            Control(list, $"Runtime AddForm binding is unproved in {instance.Label}");
+                            catalog.RuntimeAddPayloadProblems.TryAdd(list, reason);
+                            Control(list, control);
                             catalog.OtherRuntimeMutations.Add(list);
                         }
                     if (receiverBinding.MayRetarget) Taint([target.Value], instance, receiverBinding.Problem!, direct.Groups["recv"].Value, true);
@@ -846,13 +833,13 @@ public static partial class PatcherEngine
             + $"{catalog.RuntimeControlledLists.Count} leveled lists are reset, reconfigured or unverifiable. Ordinary quest reward references are consumers, not runtime controls.");
     }
 
-    private sealed record PayloadLeaf(short Gate, int Count);
-    private sealed record PayloadTrace(Dictionary<FormKey, PayloadLeaf> Leaves, Dictionary<FormKey, string> Blocked, string? Invalid);
+    internal sealed record PayloadLeaf(short Gate, int Count);
+    internal sealed record PayloadTrace(Dictionary<FormKey, PayloadLeaf> Leaves, Dictionary<FormKey, string> Blocked, string? Invalid);
 
     // Every record an AddForm payload can hand out, of any type. UseAll bundles and multi-count
     // entries are accepted. Problems that apply to the whole payload make the call unresolved;
     // an entry-level problem (ownership/condition data) only blocks the items beneath that entry.
-    private static PayloadTrace TracePayload(FormKey payload, Catalog catalog)
+    internal static PayloadTrace TracePayload(FormKey payload, Catalog catalog)
     {
         var leaves = new Dictionary<FormKey, PayloadLeaf>(); var blocked = new Dictionary<FormKey, string>(); string? invalid = null;
         void Visit(FormKey key, short gate, int count, HashSet<FormKey> path, string? entryProblem)
@@ -888,14 +875,11 @@ public static partial class PatcherEngine
     }
 
     // Declared Papyrus type of a local, parameter or property name, if the decompiled text states one.
-    private static string? DeclaredType(string text, ScriptFunction function, string name)
+    // Locals and parameters use the slice flow's resolver; array brackets are dropped.
+    internal static string? DeclaredType(string text, ScriptFunction function, string name)
     {
-        var n = Regex.Escape(name);
-        var local = Regex.Match(function.Body, @"(?im)^\s*(\w+)(?:\[\])?\s+" + n + @"\s*(=|$)");
-        if (local.Success) return local.Groups[1].Value;
-        var parameter = Regex.Match(function.Parameters, @"(?i)(?:^|,)\s*(\w+)(?:\[\])?\s+" + n + @"\b");
-        if (parameter.Success) return parameter.Groups[1].Value;
-        var property = Regex.Match(text, @"(?im)^\s*(\w+)(?:\[\])?\s+property\s+" + n + @"\b");
+        if (FunctionDeclaredType(function, name) is { } declared) return declared.TrimEnd('[', ']');
+        var property = Regex.Match(text, @"(?im)^\s*(\w+)(?:\[\])?\s+property\s+" + Regex.Escape(name) + @"\b");
         return property.Success ? property.Groups[1].Value : null;
     }
 
@@ -942,19 +926,10 @@ public static partial class PatcherEngine
         return globals.OrderBy(k=>k).ToArray();
     }
 
-    // Omit a second application only when every currently known incoming route
-    // already passes the same global. Direct consumers and unresolved roots make
-    // the proof fail closed; one controlled ancestor is not sufficient.
-    private static bool GlobalGuaranteedAt(FormKey target, FormKey global, Catalog catalog)
-    {
-        if (global.IsNull) return false;
-        return ControlGuaranteedAt(target, catalog, (_, list) => list.Global.FormKey == global);
-    }
-
     // Equal LVLG values on different lists are independent engine evaluations.
     // Omit a source application only when the destination already passes through
     // the same imposing list (or one of its context-isolation copies).
-    private static bool ProvenanceGlobalGuaranteedAt(FormKey target, FormKey imposingList, FormKey global, Catalog catalog)
+    internal static bool ProvenanceGlobalGuaranteedAt(FormKey target, FormKey imposingList, FormKey global, Catalog catalog)
     {
         if (global.IsNull || imposingList.IsNull) return false;
         return ControlGuaranteedAt(target, catalog,
@@ -981,7 +956,7 @@ public static partial class PatcherEngine
             return key == chance.List && !catalog.RuntimeControlledLists.ContainsKey(key);
         });
 
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
         public ListReferenceIndex? ChangedListParents { get; set; }
         // Material expansion's graph: every current list's entries (deleted lists skipped) and
@@ -999,13 +974,13 @@ public static partial class PatcherEngine
         }
     }
 
-    private static void MarkEntryReferencesChanged(FormKey list, Catalog catalog)
+    internal static void MarkEntryReferencesChanged(FormKey list, Catalog catalog)
         => catalog.ListReferencesChanged(list);
 
     // Own copy mappings so every membership/replacement change invalidates their
     // reverse views. Entry edits use MarkEntryReferencesChanged. Availability
     // verdicts and planned edges remain live; only these structural views are reused.
-    private sealed class PlanningCopyTopology
+    internal sealed class PlanningCopyTopology
     {
         private readonly Dictionary<FormKey, FormKey> originals = [], families = [];
         public IReadOnlyDictionary<FormKey, FormKey> Originals { get; }
@@ -1068,14 +1043,14 @@ public static partial class PatcherEngine
         public ILookup<FormKey, FormKey> Copies(Catalog catalog) => copies.Refresh(catalog);
     }
 
-    private enum PlanningListScope { All, Copies, ChangedStock }
+    internal enum PlanningListScope { All, Copies, ChangedStock }
 
     // Each reader consumes its own pending keys only at its existing refresh point.
     // Bootstrap enumerates the scope once; later captures never rediscover unchanged
     // records. Parent order remains first-indexed order, as with the previous index.
-    private sealed class ListReferenceIndex(PlanningListScope scope)
+    internal sealed class ListReferenceIndex(PlanningListScope scope)
     {
-        private readonly Dictionary<FormKey, FormKey[]> references = [];
+        internal readonly Dictionary<FormKey, FormKey[]> references = [];
         private readonly Dictionary<FormKey, List<FormKey>> parents = [];
         private readonly HashSet<FormKey> pending = [];
         private bool initialized;
@@ -1130,7 +1105,7 @@ public static partial class PatcherEngine
     }
 
     // Independent readers retain clone membership until their own next refresh.
-    private sealed class CloneCopyIndex : ILookup<FormKey, FormKey>
+    internal sealed class CloneCopyIndex : ILookup<FormKey, FormKey>
     {
         private readonly Dictionary<FormKey, FormKey> clones = [];
         private readonly Dictionary<FormKey, List<FormKey>> copies = [];
@@ -1177,7 +1152,7 @@ public static partial class PatcherEngine
     // hooks also cover IList callers, so same-count replacements/removals cannot
     // leave an index stale. Readers consume replacement slots or positional shifts
     // at their own refresh boundary.
-    private sealed class PlanningAdditions<T> : System.Collections.ObjectModel.Collection<T>
+    internal sealed class PlanningAdditions<T> : System.Collections.ObjectModel.Collection<T>
     {
         public event Action<T>? Added;
         public event Action<T>? Removed;
@@ -1217,7 +1192,7 @@ public static partial class PatcherEngine
 
     // Per-reader pending slots. Replacing one record must not force discovery of
     // every preceding record; a real positional shift still needs one rebuild.
-    private sealed class PlanningCollectionChanges<T>
+    internal sealed class PlanningCollectionChanges<T>
     {
         private PlanningAdditions<T>? owner;
         private readonly HashSet<int> replaced = [];
@@ -1244,11 +1219,11 @@ public static partial class PatcherEngine
 
     // Ordered positions for writers that edit existing slots. Metadata-only
     // replacements preserve the key groups; only affected slots are considered.
-    private sealed class PlanningPositions<T>(Func<T, FormKey> key)
+    internal sealed class PlanningPositions<T>(Func<T, FormKey> key)
     {
         private readonly List<FormKey> keys = [];
         private readonly Dictionary<FormKey, List<int>> positions = [];
-        private readonly PlanningCollectionChanges<T> changes = new();
+        internal readonly PlanningCollectionChanges<T> changes = new();
 
         public IReadOnlyDictionary<FormKey, List<int>> Refresh(PlanningAdditions<T> items)
         {
@@ -1282,7 +1257,7 @@ public static partial class PatcherEngine
     {
         private readonly List<FormKey> keys = [];
         private readonly Dictionary<FormKey, SortedList<int, T>> groups = [];
-        private readonly PlanningCollectionChanges<T> changes = new();
+        internal readonly PlanningCollectionChanges<T> changes = new();
         public void Refresh(PlanningAdditions<T> items)
         { if (changes.Changed(items)) changes.Refresh(items, Clear, Update); }
         public IEnumerable<T> Items(FormKey child) => groups.TryGetValue(child, out var values) ? values.Values : [];
@@ -1305,7 +1280,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private sealed class PlanningEdgeIndex
+    internal sealed class PlanningEdgeIndex
     {
         private readonly PlanningRecordIndex<FallbackEdge> edges = new(e => e.Child);
         private readonly PlanningRecordIndex<RuntimePlacement> placements = new(p => p.Child);
@@ -1330,7 +1305,10 @@ public static partial class PatcherEngine
         return references.Contains(key);
     }
 
-    private static bool ControlGuaranteedAt(FormKey target, Catalog catalog, Func<FormKey, ILeveledItemGetter, bool> suppliesControl)
+    // True only when every currently known incoming route passes a supplied control.
+    // Direct consumers and unresolved roots make the proof fail closed; one
+    // controlled ancestor is not sufficient.
+    internal static bool ControlGuaranteedAt(FormKey target, Catalog catalog, Func<FormKey, ILeveledItemGetter, bool> suppliesControl)
     {
         using var timing = PhaseTiming.Count("availability.control-guarantee");
         var graph = SpecializedGraph(catalog);
@@ -1414,54 +1392,32 @@ public static partial class PatcherEngine
             ? "finite or disjoint runtime source window cannot be preserved by an ordinary quest insertion" : null;
     }
 
-    private static void ProtectSourceEdges(FormKey source, FormKey global, ScriptUnlock? unlock, int firstEdge, Catalog catalog,
-        IReadOnlySet<FallbackEdge>? protectedEdges = null, MaterialAvailabilityPath? availability = null)
-    {
-        foreach(var edge in catalog.FallbackEdges.Skip(firstEdge).Where(e=>!catalog.Fallbacks.ContainsKey(e.Parent.List) && protectedEdges?.Contains(e) != true).ToArray())
-        {
-            if (availability is not null)
-            {
-                catalog.FallbackEdges.Remove(edge);
-                var target = unlock is null ? edge.Parent : edge.Parent with { Level = Math.Max(edge.Parent.Level, unlock.Level) };
-                AttachOtherMaterialBranch(source, new(target, edge.Child, availability, unlock), catalog, share: true);
-                continue;
-            }
-            if(!global.IsNull && catalog.Lists[edge.Parent.List].Global.FormKey != global)
-            {
-                var root=(LeveledItem)catalog.Lists[edge.Child];
-                root.Global.SetTo(global);
-                catalog.DistributionNotes.Add($"{source}: generated branch {root.EditorID} shares source LVLG {global}; changes from the source MCM/quest apply directly.");
-            }
-            if(unlock is not null)
-            {
-                catalog.FallbackEdges.Remove(edge);
-                var target=edge.Parent with {Level=Math.Max(edge.Parent.Level,unlock.Level)};
-                catalog.RuntimePlacements.Add(new(source,target,edge.Child,unlock));
-                catalog.DistributionNotes.Add($"Runtime: {source} → {catalog.Lists[target.List].EditorID}, level {target.Level}, after {unlock.Quest} stage {unlock.Stage}. Evidence: {unlock.Evidence}");
-            }
-        }
-    }
+    // The up-front decompiler set, first part, which the scan waits for: the winning quests' own
+    // and alias scripts, the base scripts, ActiveMagicEffect, and every script of a record holding a
+    // leveled list or FormList (holder views, the furniture proof). Load-order facts only.
+    private static IEnumerable<string> UpFrontScriptNames(IReadOnlyList<ISkyrimModGetter> mods,
+        Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners) =>
+        mods.SelectMany(m => m.Quests).GroupBy(q => q.FormKey).Select(g => g.Last()).Where(q => !q.IsDeleted && q.VirtualMachineAdapter is not null)
+            .SelectMany(q => q.VirtualMachineAdapter!.Scripts.Select(s => s.Name).Concat(q.VirtualMachineAdapter.Aliases.SelectMany(a => a.Scripts.Select(s => s.Name))))
+            .Concat(["Quest", "Alias", "ReferenceAlias", "Actor", "ObjectReference", "Debug", "Game", "LeveledItem", "Form", "Keyword", "GlobalVariable", "ActiveMagicEffect"])
+            .Concat(HolderScripts(winners, key => winners.TryGetValue(key, out var held) && held.Record is ILeveledItemGetter or IFormListGetter));
 
-    // Every script name availability reads from the Data folder: the winning quests' own
-    // and alias scripts, the base scripts, every winning record's attached scripts and
-    // ActiveMagicEffect. Load-order facts only, so a scan can resolve them early.
-    private static HashSet<string> AvailabilityScriptNames(IReadOnlyList<ISkyrimModGetter> mods,
-        Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners)
-    {
-        var quests = mods.SelectMany(m => m.Quests).GroupBy(q => q.FormKey).Select(g => g.Last())
-            .Where(q => !q.IsDeleted && q.VirtualMachineAdapter is not null);
-        var wanted = quests.SelectMany(q => q.VirtualMachineAdapter!.Scripts.Select(s => s.Name)
-            .Concat(q.VirtualMachineAdapter.Aliases.SelectMany(a => a.Scripts.Select(s => s.Name)))).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        wanted.UnionWith(new[] { "Quest", "Alias", "ReferenceAlias", "Actor", "ObjectReference", "Debug", "Game", "LeveledItem", "Form", "Keyword", "GlobalVariable" });
-        wanted.UnionWith(winners.Values.Where(w => !w.Record.IsDeleted)
-            .Select(w => w.Record).OfType<IHaveVirtualMachineAdapterGetter>()
-            .SelectMany(w => w.VirtualMachineAdapter?.Scripts.Select(s => s.Name) ?? []));
-        wanted.Add("ActiveMagicEffect");
-        return wanted;
-    }
+    // The second part, which nobody waits for: every script of a record holding a quest (holder
+    // views, slice holders). The rest of the scripts are decompiled when read.
+    private static IEnumerable<string> QuestHolderScripts(Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners) =>
+        HolderScripts(winners, key => winners.TryGetValue(key, out var held) && held.Record is IQuestGetter);
+
+    // Every script of a winning record whose VMAD holds a handle `held` accepts: a holder
+    // view reads all scripts of its holder.
+    private static IEnumerable<string> HolderScripts(Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners, Func<FormKey, bool> held) =>
+        winners.Values.Where(w => !w.Record.IsDeleted).Select(w => w.Record).OfType<IHaveVirtualMachineAdapterGetter>()
+            .Select(r => r.VirtualMachineAdapter?.Scripts ?? [])
+            .Where(scripts => scripts.Any(s => s.Properties.Any(p => p is IScriptObjectPropertyGetter h && held(h.Object.FormKey)
+                || p is IScriptObjectListPropertyGetter l && l.Objects.Any(o => held(o.Object.FormKey)))))
+            .SelectMany(scripts => scripts.Select(s => s.Name));
 
     // Script assets resolved in the background for one Data folder and plugin order.
-    private sealed record PendingScriptAssets(string Data, ModKey[] Order, Task<(HashSet<string> Wanted, ScriptAssets Assets)> Work)
+    internal sealed record PendingScriptAssets(string Data, ModKey[] Order, Task<ScriptAssets> Work)
     {
         public static PendingScriptAssets Start(string data, IReadOnlyList<ISkyrimModGetter> mods,
             Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners)
@@ -1471,183 +1427,181 @@ public static partial class PatcherEngine
             {
                 // Timing sessions are single-threaded; the scan times the wait instead.
                 using var detached = PhaseTiming.Detach();
-                var wanted = AvailabilityScriptNames(mods, winners);
-                return (wanted, new ScriptAssets(data, order, wanted));
+                var assets = new ScriptAssets(data, order);
+                // The first decompiler run overlaps the catalog build instead of following it.
+                assets.DecompileRead(UpFrontScriptNames(mods, winners));
+                // The second part follows while the scan goes on. If it fails, its scripts are decompiled when asked.
+                _ = Task.Run(() => assets.DecompileRead(QuestHolderScripts(winners)));
+                return assets;
             }));
         }
     }
 
-    private sealed class ScriptAssets
+    internal sealed class ScriptAssets
     {
-        private readonly Dictionary<string, byte[]> bytes = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, string> evidence = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, string> unverified = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, string> diagnosticEvidence = new(StringComparer.OrdinalIgnoreCase);
+        // Concurrent: an ask whose text exists reads them while a batch writes other names.
+        internal readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> bytes = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> evidence = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> unverified = new(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> diagnosticEvidence = new(StringComparer.OrdinalIgnoreCase);
         public string? AnalysisWarning { get; }
         private readonly string? compiler;
         private readonly string? compilerHash;
-        // Scripts no record attaches (custom parents, export receivers) are indexed
-        // by their winning archive and read only when an analysis asks for them.
+        // Every script is indexed by its winning archive entry and by the listing of the
+        // loose scripts folder, and read only when it is first asked for.
         // The winning entry itself is kept, so a later read never reopens its archive.
-        private readonly Dictionary<string, (string Path, IArchiveFile File)> archived = new(StringComparer.OrdinalIgnoreCase);
-        private readonly HashSet<string> wanted;
+        private readonly Dictionary<string, (string Path, IArchiveFile File, int Job)> archived = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> looseScripts = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> read = new(StringComparer.OrdinalIgnoreCase);
         private readonly string data = "";
+        // The last archive without an inventory: it may hold a higher priority entry of any script.
         private string? unreadableArchive;
-        public ScriptAssets(string data, IEnumerable<ModKey> order, HashSet<string> wanted)
+        private int unreadableJob = -1;
+        public ScriptAssets(string data, IEnumerable<ModKey> order)
         {
             using var timing = PhaseTiming.Measure("availability.assets");
-            this.wanted = wanted; this.data = data;
+            this.data = data;
             var tool = new ScriptAnalysisTool();
             compiler = tool.ExecutablePath;
             AnalysisWarning = tool.Warning;
             compilerHash = compiler is null ? null : Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(compiler)));
             if(!Directory.Exists(data))return;
             // Associated archives follow plugin order; loose files win over every archive.
-            // Every archive and loose file is read in parallel; the results are merged in
-            // that order, so the winning entry and every diagnostic are unchanged.
+            // One listing finds the archives and one the loose scripts. Every archive is
+            // listed in parallel; the inventories are merged in that order, so the winning
+            // entry and every diagnostic are unchanged.
             var mods = order.ToArray();
             var suffixes = new[]{".bsa", " - Main.bsa", " - Misc.bsa"};
-            var archiveJobs = new (string Path, bool Observed, string? Failure, List<(string Name, IArchiveFile File, byte[]? Bytes)> Files)[mods.Length * suffixes.Length];
+            var present = Directory.EnumerateFiles(data, "*.bsa").Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var archiveJobs = new (string Path, string? Failure, List<(string Name, IArchiveFile File)>? Files)[mods.Length * suffixes.Length];
                 ParallelInOrder(archiveJobs.Length, job =>
                 {
                     var path=Path.Combine(data,Path.GetFileNameWithoutExtension(mods[job / suffixes.Length].FileName.String)+suffixes[job % suffixes.Length]);
-                    var observedArchive = false;
-                    var files = new List<(string Name, IArchiveFile File, byte[]? Bytes)>();
+                    if (!present.Contains(Path.GetFileName(path))) return;
+                    var files = new List<(string Name, IArchiveFile File)>();
                     try
                     {
-                        File.GetAttributes(path);
-                        observedArchive = true;
                         var archive=Archive.CreateReader(GameRelease.SkyrimSE,path);
                         foreach(var file in archive.Files.Where(f=>f.Path.Replace('/','\\').StartsWith("scripts\\",StringComparison.OrdinalIgnoreCase)
                             && f.Path.EndsWith(".pex",StringComparison.OrdinalIgnoreCase)))
-                        {
-                            var name=Path.GetFileNameWithoutExtension(file.Path);
-                            files.Add((name, file, wanted.Contains(name) ? file.GetBytes() : null));
-                        }
-                        archiveJobs[job] = (path, true, null, files);
+                            files.Add((Path.GetFileNameWithoutExtension(file.Path), file));
+                        archiveJobs[job] = (path, null, files);
                     }
-                    catch(Exception ex) when(!observedArchive && ex is (FileNotFoundException or DirectoryNotFoundException)) { archiveJobs[job] = (path, false, null, files); }
                     catch(Exception ex) when(ex is IOException or InvalidDataException or UnauthorizedAccessException or ArchiveException)
-                    { archiveJobs[job] = (path, observedArchive, $"winning archive candidate is unreadable: {path}; {ex.GetType().Name}", files); }
+                    { archiveJobs[job] = (path, $"winning archive candidate is unreadable: {path}; {ex.GetType().Name}", files); }
                 });
-            foreach(var (path, _, failure, files) in archiveJobs)
-            {
-                if(failure is not null)
-                {
-                    // Without an inventory, any wanted name may have a higher
-                    // priority entry here. Do not certify retained earlier bytes.
-                    foreach (var name in wanted) unverified[name] = failure;
-                    unreadableArchive = failure;
-                    continue;
-                }
-                foreach(var (name, file, fileBytes) in files)
-                {
-                    if(fileBytes is null){archived[name]=(path,file);continue;}
-                    bytes[name]=fileBytes;evidence[name]=path;unverified.Remove(name);
-                }
-            }
-            var looseNames = wanted.Where(name => Path.GetFileName(name) == name).ToArray();
-            var looseJobs = new (byte[]? Bytes, string? Failure)[looseNames.Length];
-                ParallelInOrder(looseNames.Length, job =>
-                {
-                    var loose=Path.Combine(data,"Scripts",looseNames[job]+".pex");
-                    var observedLoose = false;
-                    try
-                    {
-                        File.GetAttributes(loose);
-                        observedLoose = true;
-                        looseJobs[job] = (File.ReadAllBytes(loose), null);
-                    }
-                    catch(Exception ex) when(!observedLoose && ex is (FileNotFoundException or DirectoryNotFoundException)) { }
-                    catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
-                    { looseJobs[job] = (null, $"winning loose script is unreadable: {loose}; {ex.GetType().Name}"); }
-                });
-            for (var job = 0; job < looseNames.Length; job++)
-            {
-                var name = looseNames[job];
-                var (looseBytes, failure) = looseJobs[job];
-                if (looseBytes is not null) { bytes[name]=looseBytes;evidence[name]=Path.Combine(data,"Scripts",name+".pex");unverified.Remove(name); }
-                else if (failure is not null) unverified[name] = failure;
-            }
+            for (var job = 0; job < archiveJobs.Length; job++)
+                if (archiveJobs[job].Failure is { } failure) { unreadableArchive = failure; unreadableJob = job; }
+                else foreach (var (name, file) in archiveJobs[job].Files ?? []) archived[name] = (archiveJobs[job].Path, file, job);
+            try { looseScripts.UnionWith(Directory.EnumerateFiles(Path.Combine(data, "Scripts"), "*.pex").Select(Path.GetFileNameWithoutExtension)!); }
+            catch (DirectoryNotFoundException) { }
         }
 
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> prefetchedTexts = new(StringComparer.Ordinal);
-        private static string CacheDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"XEnchantmentPatcher","ScriptAnalysis","completed-v2");
-        private string CacheKey(string name, byte[] data) => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
-            name.ToLowerInvariant()+"|"+Convert.ToHexString(SHA256.HashData(data))+"|"+compilerHash)));
-
-        // Read already completed analyses for these names in parallel. Decompile uses
-        // a prefetched text exactly where the cache lookup would have read that file.
-        public void Prefetch(IEnumerable<string> names)
+        // Reads scripts at their first ask, in parallel: the loose file wins over every archive, and
+        // an unreadable archive that outranks the winning entry (or finds none) refuses the script.
+        // A loose script's path takes the spelling of its file, whatever spelling asked for it.
+        private void Read(string[] names)
         {
-            if (compiler is null) return;
-            var cache = CacheDirectory;
-            var keys = names.Distinct(StringComparer.OrdinalIgnoreCase)
-                .Where(name => !unverified.ContainsKey(name) && bytes.ContainsKey(name))
-                .Select(name => CacheKey(name, bytes[name])).Distinct(StringComparer.Ordinal).ToArray();
-            // Advisory only: a text that cannot be read here is left to Decompile's own
-            // cache read, which reports it exactly as without the prefetch.
-            Parallel.ForEach(keys, key =>
+            var todo = names.Where(read.Add).ToArray();
+            var found = new (byte[]? Bytes, string? Evidence, string? Failure)[todo.Length];
+            ParallelInOrder(todo.Length, job =>
             {
-                try
-                {
-                    var path = Path.Combine(cache, key + ".psc");
-                    if (File.Exists(path)) prefetchedTexts[key] = AtomicFile.ReadText(path);
-                }
-                catch (Exception) { }
+                var loose = Path.Combine(data, "Scripts", (looseScripts.TryGetValue(todo[job], out var listed) ? listed : todo[job]) + ".pex");
+                try { if (looseScripts.Contains(todo[job])) { found[job] = (File.ReadAllBytes(loose), loose, null); return; } }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { found[job] = (null, null, $"winning loose script is unreadable: {loose}; {ex.GetType().Name}"); return; }
+                if (!archived.TryGetValue(todo[job], out var entry) || entry.Job < unreadableJob) { found[job] = (null, null, unreadableArchive); return; }
+                try { found[job] = (entry.File.GetBytes(), entry.Path, null); }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArchiveException)
+                { found[job] = (null, null, $"winning archive candidate is unreadable: {entry.Path}; {ex.GetType().Name}"); }
             });
+            for (var job = 0; job < todo.Length; job++)
+                if (found[job].Bytes is { } fileBytes) { evidence[todo[job]] = found[job].Evidence!; bytes[todo[job]] = fileBytes; }
+                else if (found[job].Failure is { } failure) unverified[todo[job]] = failure;
         }
 
-        public string? Decompile(string name,out string detail)
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> prefetchedTexts = new(StringComparer.OrdinalIgnoreCase);
+
+        // The decompiler over the named scripts read so far that no run produced yet;
+        // Decompile runs a script no batch produced on its own. The second part of the set runs
+        // during the analysis: an ask for a script without text waits for it instead of decompiling
+        // the script a second time.
+        public void DecompileRead(IEnumerable<string> names)
+        {
+            var named = names.ToArray();
+            lock (read)
+            {
+                Read(named);
+                var missing = named.Where(name => bytes.ContainsKey(name) && !prefetchedTexts.ContainsKey(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (compiler is null || missing.Length == 0) return;
+                // Per-file work: over 1,000 scripts go to up to four runs at once, timed as one (sessions are single-threaded).
+                using var timing = PhaseTiming.Measure("availability.decompile");
+                using var detached = PhaseTiming.Detach();
+                var parts = missing.Chunk(Math.Max(1000, (missing.Length + 3) / 4)).ToArray();
+                ParallelInOrder(parts.Length, part => DecompileAll(parts[part]));
+            }
+        }
+
+        // One decompiler run over a temporary work folder that is deleted afterwards.
+        // Returns false when the run timed out.
+        private bool DecompileAll(string[] names)
         {
             using var timing = PhaseTiming.Measure("availability.decompile");
+            // Contain the work folder before anything is created or written in it.
+            var temp=Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()))+Path.DirectorySeparatorChar;
+            var work=Path.GetFullPath(Path.Combine(temp,"XEP-scripts-"+Guid.NewGuid().ToString("N")));
+            if(!work.StartsWith(temp,StringComparison.OrdinalIgnoreCase))throw new IOException("Script work directory escaped the temporary folder.");
+            var input=Path.Combine(work,"pex");
+            Directory.CreateDirectory(input);
+            try
+            {
+                foreach(var name in names)File.WriteAllBytes(Path.Combine(input,name+".pex"),bytes[name]);
+                using var process=Process.Start(ScriptAnalysisTool.DecompileStart(compiler!,input,work))!;
+                var stdout=process.StandardOutput.ReadToEndAsync();var stderr=process.StandardError.ReadToEndAsync();
+                // About fifty times the cost per script measured on 20 cores, times four for runs that share
+                // the cores, on top of the 15 s one script had.
+                if(!process.WaitForExit(15000+200*names.Length)){process.Kill(true);process.WaitForExit();return false;}
+                Task.WaitAll(stdout,stderr);
+                // A crashed run may leave a text half written: keep none, and each script is retried alone.
+                if(process.ExitCode==0)
+                    foreach(var psc in Directory.GetFiles(work,"*.psc"))prefetchedTexts[Path.GetFileNameWithoutExtension(psc)]=File.ReadAllText(psc);
+                return true;
+            }
+            finally
+            {
+                // Cleanup and its diagnostics must not replace the decompile result or its failure reason.
+                try{Directory.Delete(work,true);}
+                catch(Exception ex)when(ex is IOException or UnauthorizedAccessException)
+                {
+                    var warning=$"WARNING: Could not remove script work folder '{work}': {ex.Message}";
+                    try{SessionRuntime.Log(warning);}catch{}
+                    try{Console.Error.WriteLine(warning);}catch{}
+                }
+            }
+        }
+
+        // Answered without waiting for a running batch: a script read and decompiled already, and,
+        // without an unreadable archive, a script no file holds. Any other ask waits for the batch,
+        // reads the script and decompiles it alone if no batch did.
+        public string? Decompile(string name, out string detail)
+        {
+            if (bytes.ContainsKey(name) ? prefetchedTexts.ContainsKey(name) : unreadableArchive is null && !looseScripts.Contains(name) && !archived.ContainsKey(name))
+                return DecompileAsked(name, out detail);
+            lock (read) { Read([name]); return DecompileAsked(name, out detail); }
+        }
+        private string? DecompileAsked(string name,out string detail)
+        {
             detail="PEX unavailable in the configured Data folder";
             if (unverified.TryGetValue(name, out var failure)) { detail = failure; return null; }
-            if (!wanted.Contains(name) && !bytes.ContainsKey(name) && Path.GetFileName(name) == name)
-            {
-                if (unreadableArchive is not null) { detail = unreadableArchive; return null; }
-                var loose = Path.Combine(this.data, "Scripts", name + ".pex");
-                try
-                {
-                    if (File.Exists(loose)) { bytes[name] = File.ReadAllBytes(loose); evidence[name] = loose; }
-                    else if (archived.TryGetValue(name, out var archivedFile))
-                    { bytes[name] = archivedFile.File.GetBytes(); evidence[name] = archivedFile.Path; }
-                }
-                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArchiveException)
-                { detail = $"winning script candidate is unreadable: {name}; {ex.GetType().Name}"; return null; }
-            }
             if(!bytes.TryGetValue(name,out var data))return null;
-            detail="Champollion.exe is required for script analysis (restore the bundled Champollion folder beside the patcher executable, or set XEP_CHAMPOLLION_PATH)";
+            detail="Champollion.exe is required for script analysis (restore the bundled Champollion folder beside XEnchantmentPatcher.dll, or set XEP_CHAMPOLLION_PATH)";
             if(compiler is null)return null;
             var hash=Convert.ToHexString(SHA256.HashData(data));
-            var key=Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(name.ToLowerInvariant()+"|"+hash+"|"+compilerHash)));
-            var cache=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"XEnchantmentPatcher","ScriptAnalysis","completed-v2");
-            failure="Decompiler could not analyze this PEX";
-            var text=prefetchedTexts.TryGetValue(key,out var prefetched)?prefetched:CompletedScriptCache.Get(cache,key,() =>
-            {
-                var work=Path.Combine(cache,".work-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(work);
-                try
-                {
-                    var pex=Path.Combine(work,name+".pex");var psc=Path.Combine(work,name+".psc");
-                    File.WriteAllBytes(pex,data);
-                    var start=ScriptAnalysisTool.DecompileStart(compiler,pex,work);
-                    using var process=Process.Start(start)!;
-                    var stdout=process.StandardOutput.ReadToEndAsync();var stderr=process.StandardError.ReadToEndAsync();
-                    if(!process.WaitForExit(15000)){process.Kill(true);process.WaitForExit();failure="Decompiler timed out";return null;}
-                    Task.WaitAll(stdout,stderr);
-                    return process.ExitCode==0&&File.Exists(psc)?File.ReadAllText(psc):null;
-                }
-                finally
-                {
-                    var ownedWork=Path.GetFullPath(work);
-                    var cacheRoot=Path.TrimEndingDirectorySeparator(Path.GetFullPath(cache))+Path.DirectorySeparatorChar;
-                    if(!ownedWork.StartsWith(cacheRoot,StringComparison.OrdinalIgnoreCase))throw new IOException("Script work directory escaped its cache root.");
-                    Directory.Delete(ownedWork,true);
-                }
-            });
-            if(text is null){detail=failure;return null;}
+            var timedOut=!prefetchedTexts.ContainsKey(name)&&!DecompileAll([name]);
+            if(!prefetchedTexts.TryGetValue(name,out var text)){detail=timedOut?"Decompiler timed out":"Decompiler could not analyze this PEX";return null;}
             detail=$"{evidence[name]}; SHA256 {hash}";
-            diagnosticEvidence[name]=$"{detail}; Decompiler SHA256 {compilerHash}; CacheKey {key}; PSC text UTF8 SHA256 {Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)))}";
+            diagnosticEvidence[name]=$"{detail}; Decompiler SHA256 {compilerHash}; PSC text UTF8 SHA256 {Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)))}";
             return text;
         }
         public string DiagnosticEvidence(string name) => diagnosticEvidence.GetValueOrDefault(name, "Asset association unavailable; see proof evidence failure.");

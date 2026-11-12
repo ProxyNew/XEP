@@ -9,9 +9,9 @@ public static partial class PatcherEngine
 {
     // Where an isolated list copy is reached: its boundary, and for a recipient or merchant
     // copy only that edge's consumer. Context copies have neither edge.
-    private sealed record IsolatedCopyScope(FormKey Boundary, LootRecipientEdge? Recipient = null, MerchantInventoryEdge? Merchant = null);
+    internal sealed record IsolatedCopyScope(FormKey Boundary, LootRecipientEdge? Recipient = null, MerchantInventoryEdge? Merchant = null);
 
-    private sealed record LootRecipientEdge(FormKey Consumer, string Role, int Index, FormKey Reference,
+    internal sealed record LootRecipientEdge(FormKey Consumer, string Role, int Index, FormKey Reference,
         IContainerEntryGetter? Original = null, IOutfitGetter? Outfit = null, bool Sleeping = false, INpcGetter? InventoryProvider = null, int Count = 1)
     {
         private sealed record IdentityText(string Value, string NegativeSign);
@@ -33,12 +33,12 @@ public static partial class PatcherEngine
         private string FormatIdentity() => $"{Role}|{Consumer}|{(Outfit is null ? "" : $"{Outfit.FormKey}|{Sleeping}|")}entry:{Index}|{Reference}|count:{Count}|provider:{InventoryProvider?.FormKey}";
     }
     private sealed record LootRecipientContext(FormKey[] Path, LootRecipientEdge Edge);
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
         public HashSet<string> ReportedRecipientNotes { get; } = new(StringComparer.Ordinal);
         public IReadOnlySet<FormKey> SpidProtectedOutfits { get; set; } = new HashSet<FormKey>();
     }
-    private sealed record LootRecipientRewrite(LootRecipientEdge Edge, FormKey Root);
+    internal sealed record LootRecipientRewrite(LootRecipientEdge Edge, FormKey Root);
 
     private static IEnumerable<LootRecipientEdge> LootRecipientReferences(TypedLootUse use, Catalog catalog, bool captureMetadata = true,
         FormKey? reference = null)
@@ -78,7 +78,7 @@ public static partial class PatcherEngine
     // Keep only visited lists with uses, in visit order; each list once, because a
     // later, longer path to the same list finds the same consumers. Past 8192
     // dequeued lists no partial recipient proof is used.
-    private sealed record RecipientWalk(FormKey[] UseRoots, Dictionary<FormKey, FormKey> ReachedFrom, bool Exceeded)
+    internal sealed record RecipientWalk(FormKey[] UseRoots, Dictionary<FormKey, FormKey> ReachedFrom, bool Exceeded)
     {
         // A root's path is fixed by the frozen walk; parallel searches share one array
         // so path-keyed text caches hit. Path arrays are never written after creation.
@@ -177,16 +177,18 @@ public static partial class PatcherEngine
         // The same edge and path objects recur for every variant of a source; once a
         // copy exists it is stable until path clones are withdrawn (which clears this).
         if (catalog.RecipientCopies.TryGetValue((edge, path), out var known)) return known;
+        // Another source's equal edge is a new object: its copy is found by identity.
+        var identity = LootIsolationIdentity(path, edge);
         FormKey target;
         if (edge.Role == "Container inventory")
         {
             // All container rewrites share the existing complete-entry machinery,
             // including preserved-stock coordination. Admission remains generic.
-            target = MerchantIsolatedCopy(path, new(edge.Consumer, edge.Index, edge.Original!), category, catalog);
-            catalog.SpecializedPathClones[LootIsolationIdentity(path, edge)] = target;
+            if (!catalog.SpecializedPathClones.TryGetValue(identity, out target))
+                catalog.SpecializedPathClones[identity] = target = MerchantIsolatedCopy(path, new(edge.Consumer, edge.Index, edge.Original!), category, catalog);
         }
-        else target = RecipientBranchCopy(path, LootIsolationIdentity(path, edge), $"recipient-node|{edge.Identity}",
-            "RecipientIsolated", category, catalog, new(path[^1], Recipient: edge), root => catalog.LootRecipientRewrites[edge.Identity] = new(edge, root));
+        else target = catalog.SpecializedPathClones.TryGetValue(identity, out var copied) ? copied : RecipientBranchCopy(path, identity,
+            $"recipient-node|{edge.Identity}", "RecipientIsolated", category, catalog, new(path[^1], Recipient: edge), root => catalog.LootRecipientRewrites[edge.Identity] = new(edge, root));
         catalog.RecipientCopies[(edge, path)] = target;
         return target;
     }
@@ -212,7 +214,7 @@ public static partial class PatcherEngine
 
     // Frozen recipient references by authored reference. Private rewrites are few
     // and change during planning; coverage checks them separately.
-    private sealed class LootRootIndex(Catalog catalog)
+    internal sealed class LootRootIndex(Catalog catalog)
     {
         public readonly ILookup<FormKey, (FormKey Container, int Index)> Containers = ContainerRecipientReferences(catalog)
             .ToLookup(r => r.Item, r => (r.Container, r.Index));
@@ -238,7 +240,7 @@ public static partial class PatcherEngine
 
     // Same set as testing every effective root against the reachable lists, but
     // visits only reachable references plus the current private rewrites.
-    private static HashSet<(FormKey Consumer, string Role)> LootRecipientCoverage(IEnumerable<FormKey> starts, Catalog catalog)
+    internal static HashSet<(FormKey Consumer, string Role)> LootRecipientCoverage(IEnumerable<FormKey> starts, Catalog catalog)
     {
         var reachable = RecipientReach(starts, catalog);
         if (reachable.Count == 0) return [];

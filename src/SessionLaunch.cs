@@ -13,7 +13,7 @@ internal static class SessionRuntime
     public static string? DirectoryPath { get; private set; }
     private static FileLease? lease;
     private static FileStream? buildLease;
-    private static StreamWriter? sessionLog;
+    internal static StreamWriter? sessionLog;
     public static string? LogError { get; private set; }
     internal static int? ExitCode { get; set; }
     private static readonly object gate = new();
@@ -97,6 +97,11 @@ internal static class SessionRuntime
             { LogError = "The session log could not be written. Settings and generation status are reported separately. " + ex.Message; }
         }
     }
+    // Whether the session log is writing, so a logged exception's details are kept there.
+    // A plain launch has no session log.
+    public static bool LogKeepsDetails { get { lock (gate) return sessionLog is not null && LogError is null; } }
+    // What to show the user for an exception: its message when the log holds the rest or the message is written for the player.
+    public static string ShownText(Exception error) => LogKeepsDetails || error is DataFolderMismatchException or OutputInstallException or UnreadableRecordException ? error.Message : error.ToString();
     public static void Dispose()
     {
         try { sessionLog?.Dispose(); }

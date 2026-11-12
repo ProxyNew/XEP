@@ -17,7 +17,7 @@ public static partial class PatcherEngine
 {
     // Physical direct-entry budget: originals also write to their existing isolated copies.
     // Call CanAdd before allocating a new copy or reserving semantic coverage.
-    private sealed class DirectPeerBudget(Func<FormKey, FormKey, int> baseline,
+    internal sealed class DirectPeerBudget(Func<FormKey, FormKey, int> baseline,
         Func<FormKey, FormKey> original, Func<FormKey, IEnumerable<FormKey>> mirrors)
     {
         private readonly Dictionary<FormKey, int> additions = [];
@@ -53,16 +53,16 @@ public static partial class PatcherEngine
         }
     }
 
-    private enum AccessOutcome { NotRoutable, NoConsumer, NoAccess, MaterialUnknown, OtherMaterialOnly, Variants }
+    internal enum AccessOutcome { NotRoutable, NoConsumer, NoAccess, MaterialUnknown, OtherMaterialOnly, Variants }
 
     // Root: top-most enchanted-only list (or a mixed list holding enchanted equipment directly).
     // Direct: every carrier group of the root also carries the source item.
-    private sealed record AccessDestination(FormKey Root, short Level, bool Direct);
+    internal sealed record AccessDestination(FormKey Root, short Level, bool Direct);
 
-    private sealed record AccessVerdict(AccessOutcome Outcome, string? Kind, string? Material, HashSet<string> Groups,
+    internal sealed record AccessVerdict(AccessOutcome Outcome, string? Kind, string? Material, HashSet<string> Groups,
         List<string> WithAccess, List<AccessDestination> Destinations, List<FormKey> KindRoots);
 
-    private sealed class AccessGroup(string id, bool container)
+    internal sealed class AccessGroup(string id, bool container)
     {
         public string Id { get; } = id;
         public bool Container { get; } = container;
@@ -83,7 +83,7 @@ public static partial class PatcherEngine
     // Lazily filled tables (group access, ancestry, roots) read live lists, which
     // planning changes. A pass therefore fills its own copy and never its source's;
     // published values are not changed afterwards and are shared.
-    private sealed class AccessIndex
+    internal sealed class AccessIndex
     {
         public AccessIndex() { }
         public AccessIndex(AccessIndex source)
@@ -120,7 +120,7 @@ public static partial class PatcherEngine
     private static bool GenericNpcUse(TypedLootUse use) => use.Role.StartsWith("NPC ", StringComparison.Ordinal)
         && use.Role != "NPC death loot" && use.Known && !use.ScopeOnly && !use.Context.StartsWith("actor:", StringComparison.Ordinal);
 
-    private static AccessIndex BuildAccessIndex(Catalog catalog)
+    internal static AccessIndex BuildAccessIndex(Catalog catalog)
     {
         var index = new AccessIndex();
         var graph = SpecializedGraph(catalog);
@@ -191,7 +191,7 @@ public static partial class PatcherEngine
         return found;
     }
 
-    private static (string Kind, string? Material, bool Enchanted)? AccessEquipment(AccessIndex index, FormKey key, Catalog catalog)
+    internal static (string Kind, string? Material, bool Enchanted)? AccessEquipment(AccessIndex index, FormKey key, Catalog catalog)
         => SharedMemo(index.Equipment, key, () => UncachedAccessEquipment(key, catalog));
 
     private static (string Kind, string? Material, bool Enchanted)? UncachedAccessEquipment(FormKey key, Catalog catalog)
@@ -240,7 +240,7 @@ public static partial class PatcherEngine
 
     // Enchanted destinations below a list: the top-most enchanted-only lists, or a mixed list that holds
     // enchanted equipment directly. Value: the highest entry level on the path (the level gate).
-    private static Dictionary<(FormKey Root, string Kind), short> AccessRoots(AccessIndex index, FormKey key, Catalog catalog)
+    internal static Dictionary<(FormKey Root, string Kind), short> AccessRoots(AccessIndex index, FormKey key, Catalog catalog)
     {
         if (index.Roots.TryGetValue(key, out var cached)) return cached;
         var result = new Dictionary<(FormKey Root, string Kind), short>(); index.Roots[key] = result;
@@ -261,7 +261,7 @@ public static partial class PatcherEngine
         return result;
     }
 
-    private static HashSet<(string Kind, string Material)> AccessRootMaterials(AccessIndex index, FormKey root, Catalog catalog)
+    internal static HashSet<(string Kind, string Material)> AccessRootMaterials(AccessIndex index, FormKey root, Catalog catalog)
     {
         if (index.RootMaterials.TryGetValue(root, out var cached)) return cached;
         var found = new HashSet<(string Kind, string Material)>(); var seen = new HashSet<FormKey>();
@@ -289,7 +289,7 @@ public static partial class PatcherEngine
         return group.Access = result;
     }
 
-    private static AccessVerdict EvaluateAccess(AccessIndex index, FormKey key, Catalog catalog)
+    internal static AccessVerdict EvaluateAccess(AccessIndex index, FormKey key, Catalog catalog)
     {
         var equipment = AccessEquipment(index, key, catalog);
         var groups = AccessCarriers(index, key, catalog);
@@ -379,7 +379,7 @@ public static partial class PatcherEngine
     // it no longer searches independently for destinations.
     private sealed record OtherMaterialAttachment(ParentEntry Parent, FormKey Child, MaterialAvailabilityPath Availability, ScriptUnlock? Unlock);
 
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
         public Dictionary<string, FormKey> MaterialPathNodes { get; } = new(StringComparer.Ordinal);
         public PlanningPositions<FallbackEdge> MaterialEdgesFrom { get; } = new(e => e.Parent.List);
@@ -588,13 +588,7 @@ public static partial class PatcherEngine
         IMajorRecordGetter source = catalog.Weapons.GetValueOrDefault(key) ?? (IMajorRecordGetter)catalog.Armors[key];
         // Route ordering ranks millions of entries; resolve each origin plugin once.
         var ranks = new Dictionary<ModKey, int>();
-        int Rank(EnchantedTemplate t)
-        {
-            var plugin = t.Enchantment.ModKey;
-            if (ranks.TryGetValue(plugin, out var rank)) return rank;
-            var i = profile.EnchantmentProviderPlugins.FindIndex(p => p.Equals(plugin.FileName.String, StringComparison.OrdinalIgnoreCase));
-            return ranks[plugin] = i < 0 ? int.MaxValue : i;
-        }
+        int Rank(EnchantedTemplate t) => ranks.TryGetValue(t.Enchantment.ModKey, out var rank) ? rank : ranks[t.Enchantment.ModKey] = ProviderRank(profile, t.Enchantment.ModKey);
         // The first template by (rank, item): what a stable sort's first element was.
         EnchantedTemplate BestTemplate(ArraySegment<(EnchantedTemplate Template, ParentEntry Parent)> group)
         {

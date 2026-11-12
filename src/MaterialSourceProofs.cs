@@ -5,10 +5,10 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record MaterialChance(FormKey List, double Value);
+    internal sealed record MaterialChance(FormKey List, double Value);
     // ActorLevelWindow: the source is selectable only up to Maximum (inclusive).
-    private enum MaterialAvailabilityKind { Global, FixedChance, ActorLevelWindow }
-    private sealed record MaterialAvailabilityControl(MaterialAvailabilityKind Kind, FormKey List, FormKey Global, double Chance, int Maximum = 0)
+    internal enum MaterialAvailabilityKind { Global, FixedChance, ActorLevelWindow }
+    internal sealed record MaterialAvailabilityControl(MaterialAvailabilityKind Kind, FormKey List, FormKey Global, double Chance, int Maximum = 0)
     {
         // Formatted once per instance; a table rather than a field keeps record equality unchanged.
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MaterialAvailabilityControl, string> IdentityTexts = new();
@@ -25,7 +25,7 @@ public static partial class PatcherEngine
             _ => $"fixed Chance None {Chance:P0} imposed by {graph.Lists[List].EditorID} [{List}]",
         };
     }
-    private sealed record MaterialAvailabilityPath
+    internal sealed record MaterialAvailabilityPath
     {
         public MaterialAvailabilityControl[] Controls { get; }
         // Only the exact merchant-source planner may opt into this representation.
@@ -51,7 +51,7 @@ public static partial class PatcherEngine
 
         public MaterialAvailabilityPath Add(MaterialAvailabilityControl control) => new(Controls.Append(control), Structure);
     }
-    private sealed record MaterialSourceProof
+    internal sealed record MaterialSourceProof
     {
         public MaterialAvailabilityPath Availability { get; }
         public FormKey Global { get; }
@@ -63,16 +63,7 @@ public static partial class PatcherEngine
         // Identity without the source minimum level: the same controls and quest unlock.
         public string ControlIdentity { get; }
 
-        public MaterialSourceProof(FormKey global, ScriptUnlock? unlock, short level, TypedLootUse[] uses, MaterialChance? chance = null)
-            : this(LegacyPath(global, chance), unlock, level, uses, chance, legacyIdentity: true)
-        { }
-
         public MaterialSourceProof(MaterialAvailabilityPath availability, ScriptUnlock? unlock, short level, TypedLootUse[] uses)
-            : this(availability, unlock, level, uses, null, legacyIdentity: false)
-        { }
-
-        private MaterialSourceProof(MaterialAvailabilityPath availability, ScriptUnlock? unlock, short level, TypedLootUse[] uses,
-            MaterialChance? legacyChance, bool legacyIdentity)
         {
             Availability = availability; Unlock = unlock; Level = level; Uses = uses;
             var globals = availability.Controls.Where(c => c.Kind == MaterialAvailabilityKind.Global).ToArray();
@@ -81,40 +72,29 @@ public static partial class PatcherEngine
             Chance = chances.Length == 1 ? new(chances[0].List, chances[0].Chance) : null;
             // Keep the textual format for ordering and pool identities, but allocate
             // it once. Get-only properties prevent a with-update from making it stale.
-            Identity = legacyIdentity
-                ? $"{Global}|{Unlock?.Quest}|{Unlock?.Stage}|{Unlock?.AtStart}|{Unlock?.OriginalTarget}|{Unlock?.Payload}|{Level}|{legacyChance?.List}|{legacyChance?.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
-                : $"{availability.Identity}|quest:{Unlock?.Quest}:{Unlock?.Stage}:{Unlock?.AtStart}:{Unlock?.OriginalTarget}:{Unlock?.Payload}|level:{Level}";
-            // A predicate quest can differ from the script owner whose Revert
-            // lifecycle is proven. Preserve old identities when owner is unset.
-            ControlIdentity = legacyIdentity
-                ? $"{Global}|{Unlock?.Quest}|{Unlock?.Stage}|{Unlock?.AtStart}|{Unlock?.OriginalTarget}|{Unlock?.Payload}|{legacyChance?.List}|{legacyChance?.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
-                : $"{availability.Identity}|quest:{Unlock?.Quest}:{Unlock?.Stage}:{Unlock?.AtStart}:{Unlock?.OriginalTarget}:{Unlock?.Payload}";
+            ControlIdentity = $"{availability.Identity}|quest:{Unlock?.Quest}:{Unlock?.Stage}:{Unlock?.AtStart}:{Unlock?.OriginalTarget}:{Unlock?.Payload}";
+            Identity = $"{ControlIdentity}|level:{Level}";
+            // A predicate quest can differ from the script owner whose Revert lifecycle is proven.
             if (unlock is not null && !unlock.OwnerQuest.IsNull) { Identity += $"|owner:{unlock.OwnerQuest}"; ControlIdentity += $"|owner:{unlock.OwnerQuest}"; }
-        }
-
-        private static MaterialAvailabilityPath LegacyPath(FormKey global, MaterialChance? chance)
-        {
-            var controls = new List<MaterialAvailabilityControl>();
-            if (!global.IsNull) controls.Add(new(MaterialAvailabilityKind.Global, default, global, 0));
-            if (chance is not null) controls.Add(new(MaterialAvailabilityKind.FixedChance, chance.List, default, chance.Value));
-            return new(controls);
         }
     }
 
     // Only the source paths supporting a consumer can authorize expansion there.
     // Unsupported side branches must not veto an independently proven path.
-    private static List<MaterialSourceProof> MaterialSourceProofs(FormKey source, Catalog catalog, ICollection<string> evidence) =>
+    internal static List<MaterialSourceProof> MaterialSourceProofs(FormKey source, Catalog catalog, ICollection<string> evidence) =>
         MaterialSourceProofsCore(source, catalog, evidence);
 
-    // Explicit relocation can carry static upper bounds through the existing availability wrapper.
-    // Other callers retain their structural-replication policy; ordinary runtime bounds stay refused.
+    // Explicit relocation writes its own entry beside a counterpart. It can carry static upper
+    // bounds through the existing availability wrapper and replicates no source entry's count or
+    // entry data. Other callers retain their structural-replication policy; ordinary runtime
+    // bounds stay refused.
     private static List<MaterialSourceProof> RelocatedSourceProofs(FormKey source, Catalog catalog, ICollection<string> evidence) =>
-        MaterialSourceProofsCore(source, catalog, evidence, preserveStaticWindows: true);
+        MaterialSourceProofsCore(source, catalog, evidence, relocation: true);
 
     private const string SourceSearchCapNotice = "Source availability search exceeded 8192 states; no partial source proof is used.";
 
     private static List<MaterialSourceProof> MaterialSourceProofsCore(FormKey source, Catalog catalog, ICollection<string> evidence,
-        FormKey requiredAncestor = default, ParentEntry? approvedPlacement = null, bool replicatedStart = false, bool preserveStaticWindows = false)
+        FormKey requiredAncestor = default, bool replicatedStart = false, bool relocation = false)
     {
         var graph = SpecializedGraph(catalog);
         var found = new Dictionary<(string Availability, ScriptUnlock? Unlock, short Level), (MaterialAvailabilityPath Path, HashSet<TypedLootUse> Uses)>();
@@ -128,7 +108,8 @@ public static partial class PatcherEngine
         todo.Enqueue((source, new(), null, 1, default, false));
         foreach (var unlock in unlocks)
         {
-            if (unlock.Count != 1) { evidence.Add("Source route withheld: quest payload count requires selector replication."); continue; }
+            // The insertion count times the payload entry counts; relocation replicates neither (see below).
+            if (!relocation && unlock.Count != 1) { evidence.Add("Source route withheld: quest payload count requires selector replication."); continue; }
             // Prove the contents of an inserted payload before crossing its script
             // edge. Starting at the insertion target would lose payload globals.
             todo.Enqueue((source, new(), unlock, unlock.Level, unlock.Payload.IsNull ? source : unlock.Payload, false));
@@ -197,14 +178,21 @@ public static partial class PatcherEngine
             {
                 if (!payload.IsNull && !graph.Up(parent.List).Contains(payload)) continue;
                 var owner = graph.Lists[parent.List];
-                if (parent.Count != 1 || LeveledEntryRows(owner).Any(e => e.Reference == key && e.HasExtraData))
-                { evidence.Add($"Source route withheld at {owner.EditorID} [{parent.List}]: count or entry conditions require replication."); continue; }
+                // Placement in the source's own contexts would have to replicate an entry's
+                // count and entry data (owner, item condition). Neither bounds a level window
+                // or a gate, so relocation needs only a count that can supply the item.
+                if (relocation ? parent.Count < 1 : (parent.Count != 1 || LeveledEntryRows(owner).Any(e => e.Reference == key && e.HasExtraData)))
+                {
+                    evidence.Add($"Source route withheld at {owner.EditorID} [{parent.List}]: "
+                        + (relocation ? "an entry count below one proves no availability." : "count or entry conditions require replication."));
+                    continue;
+                }
                 var nextAvailability = availability;
                 if (HasHighestEligibleCutoff(owner))
                 {
                     var maximum = SelectionEntryMaximum(owner, parent.Level, catalog.ScriptReceiverLevels.GetValueOrDefault(parent.List, []));
                     if (catalog.ScriptUnresolvedReceivers.Contains(parent.List)
-                        || maximum < ushort.MaxValue && (!preserveStaticWindows || unlock is not null))
+                        || maximum < ushort.MaxValue && (!relocation || unlock is not null))
                     { evidence.Add($"Source route withheld at {owner.EditorID} [{parent.List}]: finite level window requires replication."); continue; }
                     if (maximum < ushort.MaxValue)
                         nextAvailability = availability.Add(new(MaterialAvailabilityKind.ActorLevelWindow, parent.List, default, 0, maximum));
@@ -237,15 +225,15 @@ public static partial class PatcherEngine
 
     // One instance per assessment: uses, proofs and their control records stay fixed.
     // A destination requirement is independent of the particular proof being tested.
-    private sealed class MaterialSourceMatcher
+    internal sealed class MaterialSourceMatcher
     {
-        private sealed record Requirement(string Availability, ScriptUnlock? Unlock, short Level);
+        internal sealed record Requirement(string Availability, ScriptUnlock? Unlock, short Level);
         private readonly ILookup<(FormKey Consumer, string Role), TypedLootUse> exactUses;
         private readonly ILookup<FormKey, TypedLootUse> livingNpcUses;
         private readonly ILookup<(string Role, string Context), TypedLootUse> contextUses;
         private readonly Dictionary<TypedLootUse, Requirement?> sourceRequirements = [];
         // Filled from parallel context workers; each requirement is pure.
-        private readonly ConcurrentDictionary<TypedLootUse, Requirement?> destinationRequirements = new();
+        internal readonly ConcurrentDictionary<TypedLootUse, Requirement?> destinationRequirements = new();
 
         public MaterialSourceMatcher(TypedLootUse[] all, IReadOnlyList<MaterialSourceProof> proofs)
         {

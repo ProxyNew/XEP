@@ -14,10 +14,10 @@ public static partial class PatcherEngine
         public static readonly FormKeyOrder Instance = new();
         public int Compare(FormKey x, FormKey y)
         {
-            bool xNull = x.ModKey.IsNull, yNull = y.ModKey.IsNull;
-            if (xNull && yNull) return x.ID.CompareTo(y.ID);
-            if (xNull) return -1;
-            if (yNull) return 1;
+            // Equal mod keys (two null ones included) differ only by ID.
+            if (x.ModKey.Equals(y.ModKey)) return x.ID.CompareTo(y.ID);
+            if (x.ModKey.IsNull) return -1;
+            if (y.ModKey.IsNull) return 1;
             var compared = CompareModKeys(x.ModKey, y.ModKey);
             return compared != 0 ? compared : x.ID.CompareTo(y.ID);
         }
@@ -53,7 +53,7 @@ public static partial class PatcherEngine
     private static bool ExactActorDeathUse(TypedLootUse destination, TypedLootUse source)
         => (destination.Role == "NPC death loot" || destination.Role == SpidDeathRole) && IsLivingNpcRole(source.Role)
             && destination.Known && source.Known && destination.Consumer == source.Consumer;
-    private static bool MatchesSingleSpecializedUse(TypedLootUse destination, TypedLootUse source, bool controlled)
+    internal static bool MatchesSingleSpecializedUse(TypedLootUse destination, TypedLootUse source, bool controlled)
         => ExactActorDeathUse(destination, source)
               || destination.Known && source.Known && destination.EstablishedRole.Length > 0
                   && source.Role == destination.EstablishedRole && source.Consumer == destination.Consumer
@@ -72,7 +72,7 @@ public static partial class PatcherEngine
                 && source.Role == destination.Role && source.Context == destination.Context);
 
     // Shared destination-context and isolation rules for existing and missing material families.
-    private static List<FormKey[]> SpecializedContextPaths(FormKey point, TypedLootUse[] sources, bool controlled, Catalog catalog,
+    internal static List<FormKey[]> SpecializedContextPaths(FormKey point, TypedLootUse[] sources, bool controlled, Catalog catalog,
         Func<TypedLootUse, bool>? sourceMatch = null, Func<TypedLootUse, bool>? requiresProof = null,
         Dictionary<FormKey, bool>? boundaryFits = null)
     {
@@ -111,11 +111,7 @@ public static partial class PatcherEngine
     // The breadth-first discovery records one predecessor per list, so only a
     // chosen path is materialized; discovery order and the chosen paths are the
     // same as enqueuing a path copy per list.
-    private static List<FormKey[]> DisjointContextPaths(FormKey point,
-        Func<FormKey, IEnumerable<FormKey>> parents, Func<FormKey, bool> fits, bool parentsAreSortedDistinct = false)
-        => DisjointContextPathsCore(point, parents, fits, parentsAreSortedDistinct, fitsIsMemoized: false);
-
-    private static List<FormKey[]> DisjointContextPathsCore(FormKey point,
+    internal static List<FormKey[]> DisjointContextPathsCore(FormKey point,
         Func<FormKey, IEnumerable<FormKey>> parents, Func<FormKey, bool> fits, bool parentsAreSortedDistinct, bool fitsIsMemoized,
         Func<FormKey, FormKey, bool>? boundaryEdgeFits = null)
     {
@@ -206,7 +202,7 @@ public static partial class PatcherEngine
 
     // Source-independent facts only. Availability has been initialized and remains
     // fixed for an AccessIndex's lifetime; generated lists are not graph evidence.
-    private static string? MaterialBranchProblem(AccessIndex access, FormKey key, string kind, Catalog catalog)
+    internal static string? MaterialBranchProblem(AccessIndex access, FormKey key, string kind, Catalog catalog)
     {
         var graph = SpecializedGraph(catalog);
         var list = graph.Lists[key];
@@ -228,7 +224,7 @@ public static partial class PatcherEngine
         return SharedMemo(access.MaterialBranchSafety, (key, kind), Evaluate);
     }
 
-    private static IReadOnlySet<(string Kind, string Material)> MaterialBranchMaterials(AccessIndex access,
+    internal static IReadOnlySet<(string Kind, string Material)> MaterialBranchMaterials(AccessIndex access,
         FormKey point, Catalog catalog)
     {
         return SharedMemo(access.MaterialBranchMaterials, point, () => (IReadOnlySet<(string Kind, string Material)>)SpecializedGraph(catalog).Down(point)
@@ -239,7 +235,7 @@ public static partial class PatcherEngine
 
     // Path is terminal -> material branch -> category selector. A repeated last node
     // means the context root itself must be wrapped to preserve its existing choices.
-    private static List<FormKey[]> SpecializedMaterialPaths(FormKey source, FormKey terminal, EquipmentClass cls,
+    internal static List<FormKey[]> SpecializedMaterialPaths(FormKey source, FormKey terminal, EquipmentClass cls,
         Catalog catalog, SpecializedAssessment assessment, IReadOnlySet<FormKey>? observedRoots = null)
     {
         var graph = SpecializedGraph(catalog);

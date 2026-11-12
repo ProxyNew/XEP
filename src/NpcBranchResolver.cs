@@ -8,7 +8,7 @@ public static partial class PatcherEngine
 {
     // One instance per evidence-graph build. Only immutable adjacency/record facts
     // are memoized; Resolve depends on both the active path and shared LVLN choices.
-    private sealed class NpcBranchResolver(IReadOnlyDictionary<FormKey, INpcGetter> npcs,
+    internal sealed class NpcBranchResolver(IReadOnlyDictionary<FormKey, INpcGetter> npcs,
         IReadOnlyDictionary<FormKey, ILeveledNpcGetter> leveled)
     {
         private enum Field { Inventory, Traits, Factions }

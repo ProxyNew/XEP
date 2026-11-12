@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
@@ -20,10 +19,10 @@ public sealed record SkyPatcherInputReport(string Status, string Version, string
 {
     internal IReadOnlyList<string> Information { get; init; } = [];
     internal bool EditorIdCacheAvailable { get; init; }
-    // Retain exact bytes (including switches in other categories) for later
-    // interpretation of the same snapshot. They are not duplicated in JSON.
-    internal IReadOnlyDictionary<string, ReadOnlyMemory<byte>> CapturedBytes { get; init; }
-        = new Dictionary<string, ReadOnlyMemory<byte>>();
+    // The category switches of SkyPatcher.ini, recorded at capture (including categories XEP does not
+    // analyse): a category runs when its value reads nonzero as GetPrivateProfileIntA reads it. Null when the
+    // file is absent or cannot be read as the native call reads it (the capture is then incomplete).
+    internal IReadOnlyDictionary<string, bool>? CategorySwitches { get; init; }
     internal IReadOnlyDictionary<FormKey, string> NativeListEditorIds { get; init; }
         = new Dictionary<FormKey, string>();
     internal IReadOnlyDictionary<FormKey, IReadOnlySet<FormKey>> KeywordMembers { get; init; }
@@ -46,64 +45,68 @@ internal static class SkyPatcherInputs
         "chanceNone", "objectMultCount"
     };
 
-    public static SkyPatcherInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods,
-        Func<IReadOnlyDictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)>>? winners = null)
-        => CaptureWith(dataFolder, mods, new NativeFormResolver(mods, winners ?? (() => PatcherEngine.LoadOrderWinners(mods))));
+    // The simple form for fixtures: builds the scan environment for one Data folder.
+    public static SkyPatcherInputReport Capture(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods)
+        => Capture(FrameworkInputs.Create(dataFolder, mods));
 
-    // Scan shares one resolver (winners and EditorID index) with LLOS capture.
-    internal static SkyPatcherInputReport CaptureWith(string? dataFolder, IReadOnlyList<ISkyrimModGetter> mods, NativeFormResolver resolver)
+    internal static SkyPatcherInputReport Capture(FrameworkInputs inputs)
     {
         using var timing = PhaseTiming.Measure("skypatcher.capture");
-        if (string.IsNullOrWhiteSpace(dataFolder)) return Empty();
-        var plugins = Path.Combine(dataFolder, "SKSE", "Plugins");
-        var root = Path.Combine(plugins, "SkyPatcher");
-        var dll = Path.Combine(plugins, "SkyPatcher.dll");
-        var settings = Path.Combine(plugins, "SkyPatcher.ini");
-        if (!File.Exists(dll) && !File.Exists(settings) && !Directory.Exists(root)) return Empty();
+        if (!inputs.Exists) return Empty();
+        var resolver = inputs.Resolver;
+        var plugins = inputs.PluginsFolder;
+        var rootEntry = inputs.PluginDirectory("SkyPatcher");
+        var dllEntry = inputs.PluginFile("SkyPatcher.dll");
+        var settingsEntry = inputs.PluginFile("SkyPatcher.ini");
+        if (dllEntry is null && settingsEntry is null && rootEntry is null) return Empty();
+        var root = rootEntry?.Path ?? "";
 
         var diagnostics = new DiagnosticMessages();
         var files = new List<SkyPatcherFile>();
-        var capturedBytes = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.OrdinalIgnoreCase);
         var version = "";
         var dllHash = "";
         var editorIdDllHash = "";
         var editorIdVersion = "";
-        string? editorIdSettings = null;
         var enabled = false;
         var uncertain = false;
+        var po3Captured = false;
+        IReadOnlyDictionary<string, bool>? categorySwitches = null;
         try
         {
-            if (File.Exists(dll))
+            if (dllEntry is not null)
             {
-                using var stream = File.OpenRead(dll);
-                dllHash = Convert.ToHexString(SHA256.HashData(stream));
-                version = FileVersionInfo.GetVersionInfo(dll).FileVersion ?? "unknown";
+                var dll = DllIdentity.ReadFileVersion(dllEntry.Path);
+                dllHash = dll.Sha256;
+                version = dll.Version;
             }
-            if (File.Exists(settings))
+            if (settingsEntry is not null)
             {
-                var bytes = File.ReadAllBytes(settings);
-                capturedBytes.Add("SkyPatcher.ini", bytes);
-                var text = Decode(bytes);
-                enabled = CategoryEnabled(text, diagnostics);
-                files.Add(new("SkyPatcher.ini", Hash(bytes), "settings", Array.Empty<SkyPatcherRule>()));
+                // One decode and one reader; leveled lists read the same map as every category. Switches the
+                // reader cannot reproduce make the capture incomplete instead of reading as off.
+                var bytes = File.ReadAllBytes(settingsEntry.Path);
+                var unverified = new List<string>();
+                categorySwitches = CategorySwitches(bytes, unverified);
+                enabled = categorySwitches is not null && categorySwitches.TryGetValue("LeveledList", out var leveledLists) && leveledLists;
+                if (unverified.Count > 0)
+                {
+                    uncertain = true;
+                    diagnostics.Add($"SkyPatcher.ini category switches are unverified: {string.Join("; ", unverified)}. The capture is incomplete.");
+                }
+                files.Add(new("SkyPatcher.ini", FrameworkFiles.Hash(bytes), "settings", Array.Empty<SkyPatcherRule>()));
             }
             else diagnostics.Add("SkyPatcher settings are missing; no enabled leveled-list category is established.");
-            var editorIdDll = Path.Combine(plugins, "po3_Tweaks.dll");
-            if (File.Exists(editorIdDll))
+            // po3_Tweaks was read once for the scan.
+            if (inputs.Po3Dll is { } po3)
             {
-                using var stream = File.OpenRead(editorIdDll);
-                editorIdDllHash = Convert.ToHexString(SHA256.HashData(stream));
-                editorIdVersion = FileVersionInfo.GetVersionInfo(editorIdDll).FileVersion ?? "unknown";
+                editorIdDllHash = po3.Sha256;
+                editorIdVersion = po3.Version;
                 files.Add(new("po3_Tweaks.dll", editorIdDllHash, "editorid-dependency", Array.Empty<SkyPatcherRule>()));
             }
-            var editorIdIni = Path.Combine(plugins, "po3_Tweaks.ini");
-            if (File.Exists(editorIdIni))
-            {
-                var bytes = File.ReadAllBytes(editorIdIni);
-                capturedBytes.Add("po3_Tweaks.ini", bytes);
-                editorIdSettings = Decode(bytes);
-                files.Add(new("po3_Tweaks.ini", Hash(bytes), "editorid-dependency", Array.Empty<SkyPatcherRule>()));
-            }
+            if (inputs.Po3Failure is { } failure) throw failure;
+            if (inputs.Po3IniUndecodable is { } undecodable) throw undecodable;
+            if (inputs.Po3IniSha256 is { } iniHash)
+                files.Add(new("po3_Tweaks.ini", iniHash, "editorid-dependency", Array.Empty<SkyPatcherRule>()));
+            po3Captured = true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
@@ -114,7 +117,7 @@ internal static class SkyPatcherInputs
         // Keep discovery order as evidence. It is NOT certified execution order.
         // Capture other categories too: later route proofs must account for their
         // equipment/consumer mutations without reopening files after Scan.
-        if (Directory.Exists(root))
+        if (rootEntry is not null)
         {
             var directories = new Queue<string>();
             directories.Enqueue(root);
@@ -142,8 +145,7 @@ internal static class SkyPatcherInputs
                         try
                         {
                             var bytes = File.ReadAllBytes(path);
-                            capturedBytes.Add(relative, bytes);
-                            var text = Decode(bytes);
+                            var text = FrameworkFiles.DecodeStrict(bytes);
                             var itemCategory = Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar)[0]
                                 .Equals("leveledList", StringComparison.OrdinalIgnoreCase);
                             var condition = fileName[..iniAt];
@@ -153,7 +155,7 @@ internal static class SkyPatcherInputs
                                 : !itemCategory ? "other-category-unanalysed"
                                 : !enabled ? "disabled" : "active";
                             var rules = ReadRules(text, itemCategory && status == "active", resolver);
-                            files.Add(new(relative, Hash(bytes), status, rules));
+                            files.Add(new(relative, FrameworkFiles.Hash(bytes), status, rules));
                         }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
                         {
@@ -172,17 +174,17 @@ internal static class SkyPatcherInputs
         }
         // 8.0 is the supported messaging baseline; the captured parser contract
         // remains input-contract-7.0 and other majors remain unverified.
-        var supportedMajor = Major(version) == 8;
+        var supportedMajor = FrameworkRelease.MajorOf(version) == 8;
         var needsEditorIds = files.Where(f => f.Status == "active").SelectMany(f => f.Rules).Any(r =>
             r.Fields.Any(f => f.StartsWith("filterByEditorId", StringComparison.OrdinalIgnoreCase))
             || r.References.Any(reference => !reference.Identifier.Contains('|')));
-        var editorIdCacheAvailable = EditorIdDependencySupported(editorIdDllHash, editorIdSettings);
+        var editorIdCacheAvailable = po3Captured && inputs.EditorIdSupport == "available";
         var editorIdsSupported = !needsEditorIds || editorIdCacheAvailable;
         var statusOverall = uncertain ? "incomplete-capture" : dllHash.Length == 0 ? "missing-dll"
             : !enabled ? "disabled" : !editorIdsSupported ? "unsupported-editorid-dependency" : "input-contract-7.0";
         if (enabled && !editorIdsSupported)
             diagnostics.Add("SkyPatcher EditorID inputs require po3_Tweaks with [Fixes] Load EditorIDs=true; a missing DLL or disabled cache prevents distribution import.");
-        if (enabled && needsEditorIds && editorIdsSupported && Major(editorIdVersion) != 1)
+        if (enabled && needsEditorIds && editorIdsSupported && FrameworkRelease.MajorOf(editorIdVersion) != 1)
             diagnostics.Add($"po3_Tweaks {editorIdVersion} differs in major version from the observed 1.16 release (DLL {editorIdDllHash}); its EditorID cache behavior is applied unverified.");
         if (enabled && dllHash.Length > 0)
             diagnostics.AddDiagnostic(supportedMajor
@@ -195,18 +197,18 @@ internal static class SkyPatcherInputs
         if (missing > 0) diagnostics.AddInformation($"SkyPatcher: {missing} references could not resolve against the active load order; they contribute no imported items or distribution.");
         var identity = $"skypatcher-inputs-v1\n{statusOverall}\n{version}\n{dllHash}\n" +
             string.Join('\n', files.Select(f => $"{f.Path}|{f.Sha256}|{f.Status}"));
-        return new(statusOverall, version, dllHash, Hash(Encoding.UTF8.GetBytes(identity)),
+        return new(statusOverall, version, dllHash, FrameworkFiles.Hash(Encoding.UTF8.GetBytes(identity)),
             files.AsReadOnly(), diagnostics.AsReadOnly())
         {
             Information = diagnostics.Information,
             EditorIdCacheAvailable = editorIdCacheAvailable,
-            CapturedBytes = capturedBytes.AsReadOnly(),
+            CategorySwitches = categorySwitches,
             KeywordMembers = resolver.KeywordMembers(files.Where(f => f.Status == "active").SelectMany(f => f.Rules)
                 .SelectMany(r => r.References).Where(r => r.Field.Equals("removeObjectsByKeyword", StringComparison.OrdinalIgnoreCase) && r.Status == "resolved")
                 .Select(r => FormKey.Factory(r.FormKey!)).ToHashSet()),
             // po3's cache uses try_emplace: overrides retain the first nonempty
             // EditorID, even when the winning record has a different name.
-            NativeListEditorIds = needsEditorIds ? mods.SelectMany(m => m.LeveledItems)
+            NativeListEditorIds = needsEditorIds ? resolver.Mods.SelectMany(m => m.LeveledItems)
                 .Where(l => !string.IsNullOrEmpty(l.EditorID)).GroupBy(l => l.FormKey)
                 .ToDictionary(g => g.Key, g => g.First().EditorID!).AsReadOnly()
                 : new Dictionary<FormKey, string>()
@@ -214,52 +216,86 @@ internal static class SkyPatcherInputs
     }
 
     private static SkyPatcherInputReport Empty() => new("absent", "", "", "", Array.Empty<SkyPatcherFile>(), Array.Empty<string>());
-    // FileVersion strings vary in part count (po3_Tweaks reports 1.16.0.1.0);
-    // only the leading component decides the major version. Shared with CDF capture.
-    internal static int? Major(string version)
-        => int.TryParse(version.Split('.')[0], NumberStyles.None, CultureInfo.InvariantCulture, out var major) ? major : null;
-
-    // Shared with LLOS capture: both read the same native EditorID cache.
-    internal static bool EditorIdDependencySupported(string dllHash, string? settings)
+    // The only SkyPatcher.ini reader. SkyPatcher gates each category on
+    // GetPrivateProfileIntA("Patcher", "iEnable<Category>Patching", 0, ".\Data\SKSE\Plugins\SkyPatcher.ini")
+    // (upstream Zzyxz/SkyPatcher main.cpp at 876662e5, not bound to the 8.0 DLL). Every rule below was measured
+    // against that Windows call (review-fixes ticket 04): lines end at CR or LF; a header is a line starting with
+    // '[' whose name runs to the first ']' or the line end; only the first [Patcher] section counts; a UTF-8
+    // byte-order mark keeps the first line from being a header; keys, names and values are trimmed of characters
+    // up to ' '; the first occurrence of a key counts. A switch line holding a byte that is not UTF-8, and a file
+    // with NUL bytes but no UTF-16LE byte-order mark (null map), are listed in unverified.
+    internal static IReadOnlyDictionary<string, bool>? CategorySwitches(byte[] bytes, List<string> unverified)
     {
-        if (dllHash.Length == 0 || settings is null) return false;
-        var fixes = false;
-        bool? enabled = null;
-        foreach (var raw in settings.Split('\n'))
+        var start = bytes.AsSpan();
+        var utf16 = start.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE]) && !start.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE, 0, 0]);
+        if (!utf16 && start.Contains((byte)0))
         {
-            var line = raw.Trim();
-            if (line.StartsWith(';') || line.StartsWith('#') || line.Length == 0) continue;
-            if (line.StartsWith('[') && line.EndsWith(']')) { fixes = line[1..^1].Equals("Fixes", StringComparison.OrdinalIgnoreCase); continue; }
-            var pair = line.Split('=', 2);
-            if (!fixes || pair.Length != 2 || !pair[0].Trim().Equals("Load EditorIDs", StringComparison.OrdinalIgnoreCase)) continue;
-            if (enabled.HasValue || !bool.TryParse(pair[1].Trim(), out var value)) return false;
-            enabled = value;
+            unverified.Add("the file holds NUL bytes without a UTF-16LE byte-order mark");
+            return null;
         }
-        return enabled == true;
-    }
-    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
-    private static string Decode(byte[] bytes)
-    {
-        using var reader = new StreamReader(new MemoryStream(bytes), new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: true);
-        return reader.ReadToEnd();
-    }
-
-    private static bool CategoryEnabled(string text, List<string> diagnostics)
-    {
-        var section = "";
-        foreach (var raw in text.Split('\n'))
+        var markedFirstLine = start.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]);
+        var switches = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        bool inPatcher = false, seenPatcher = false, firstLine = true;
+        foreach (var raw in FrameworkFiles.DecodeLenient(bytes).Split(['\r', '\n']))
         {
-            var line = raw.Trim();
-            if (line.StartsWith(';') || line.Length == 0) continue;
-            if (line.StartsWith('[') && line.EndsWith(']')) { section = line[1..^1]; continue; }
+            var header = !(firstLine && markedFirstLine);
+            firstLine = false;
+            var line = TrimNative(raw);
+            if (line.Length == 0 || line[0] == ';') continue;
+            if (line[0] == '[')
+            {
+                if (!header) continue;
+                var close = line.IndexOf(']');
+                var patcher = TrimNative(line[1..(close < 0 ? line.Length : close)]).Equals("Patcher", StringComparison.OrdinalIgnoreCase);
+                inPatcher = patcher && !seenPatcher;
+                seenPatcher |= patcher;
+                continue;
+            }
             var split = line.IndexOf('=');
-            if (!section.Equals("Patcher", StringComparison.OrdinalIgnoreCase) || split < 0 ||
-                !line[..split].Trim().Equals("iEnableLeveledListPatching", StringComparison.OrdinalIgnoreCase)) continue;
-            if (int.TryParse(line[(split + 1)..].Trim(), out var enabled)) return enabled != 0;
-            diagnostics.Add("Malformed SkyPatcher iEnableLeveledListPatching; category activation is unverified.");
-            return false;
+            if (!inPatcher || split < 0) continue;
+            // The native key is ASCII, so a key holding a byte that is not UTF-8 never matches it.
+            var key = TrimNative(line[..split]);
+            if (key.Length < 15 || !key.StartsWith("iEnable", StringComparison.OrdinalIgnoreCase)
+                || !key.EndsWith("Patching", StringComparison.OrdinalIgnoreCase)) continue;
+            if (switches.TryAdd(key[7..^8], NativeIntegerNonZero(line[(split + 1)..])) && line.Contains('\uFFFD'))
+                unverified.Add(key + " holds a byte that is not UTF-8");
         }
-        return false;
+        return switches.AsReadOnly();
+    }
+
+    // The measured GetPrivateProfileIntA value: trimmed, one matching '' or "" pair removed, then leading
+    // characters up to ' ' or above U+007F skipped (the bytes the native parser skips), one sign, a lowercase
+    // 0x, 0o or 0b prefix, and digits of that base accumulated as an unchecked 32-bit integer up to the first
+    // other character. An empty value returns the default, 0. Only zero versus nonzero matters.
+    internal static bool NativeIntegerNonZero(string value)
+    {
+        var text = TrimNative(value).AsSpan();
+        if (text.Length >= 2 && text[0] is '"' or '\'' && text[^1] == text[0]) text = text[1..^1];
+        while (text.Length > 0 && (text[0] <= ' ' || text[0] > '\u007F')) text = text[1..];
+        if (text.Length > 0 && text[0] is '+' or '-') text = text[1..];
+        var radix = 10u;
+        if (text.Length >= 2 && text[0] == '0' && text[1] is 'x' or 'o' or 'b')
+        {
+            radix = text[1] == 'x' ? 16u : text[1] == 'o' ? 8u : 2u;
+            text = text[2..];
+        }
+        var total = 0u;
+        foreach (var c in text)
+        {
+            var digit = c is >= '0' and <= '9' ? (uint)(c - '0') : c is >= 'a' and <= 'z' ? (uint)(c - 'a' + 10)
+                : c is >= 'A' and <= 'Z' ? (uint)(c - 'A' + 10) : radix;
+            if (digit >= radix) break;
+            total = unchecked(total * radix + digit);
+        }
+        return total != 0;
+    }
+
+    private static string TrimNative(string text)
+    {
+        int first = 0, last = text.Length;
+        while (first < last && text[first] <= ' ') first++;
+        while (last > first && text[last - 1] <= ' ') last--;
+        return text[first..last];
     }
 
     private static IReadOnlyList<SkyPatcherRule> ReadRules(string text, bool resolve, NativeFormResolver resolver)
@@ -332,15 +368,14 @@ internal static class SkyPatcherInputs
         var separator = identifier.IndexOf('|');
         if (separator >= 0)
         {
-            if (!resolver.TryGetPlugin(identifier[..separator].Trim(), out var plugin)) return Result("missing-plugin");
             var number = identifier[(separator + 1)..].Trim();
             if (number.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) number = number[2..];
-            if (!uint.TryParse(number, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var id)) return Result("malformed-identifier");
+            uint? id = uint.TryParse(number, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
             // Full load-order IDs are normalized using the named loaded plugin,
             // never inferred from string length or a physically installed file.
-            id &= plugin.IsSmallMaster ? 0xFFFu : 0xFFFFFFu;
-            record = resolver.Winner(new FormKey(plugin.ModKey, id));
-            if (record is null) return Result("missing-record");
+            var (failure, located) = FormLocator.Locate(resolver, identifier[..separator].Trim(), id, FormIdRange.Mask);
+            if (failure is not null) return Result(failure);
+            record = located!;
         }
         else
         {

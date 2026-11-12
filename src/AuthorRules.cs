@@ -134,6 +134,8 @@ internal static class AuthorRules
     {
         if (bytes.Length > MaxFileBytes)
             return Unusable(lookup, $"The rules file is larger than {MaxFileBytes / 1024} KiB and is not used.");
+        // JsonDocument rejects a UTF-8 byte-order mark in raw bytes; editors often save one.
+        if (bytes.StartsWith(Encoding.UTF8.Preamble)) bytes = bytes[Encoding.UTF8.Preamble.Length..];
         JsonDocument document;
         try
         {

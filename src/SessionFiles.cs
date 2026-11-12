@@ -81,9 +81,9 @@ internal static class AtomicFile
         ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ReadText(path)))) : null;
 }
 
-// The stable sidecar is never deleted: deleting a lock file could create two
-// independent locks. File-sharing exclusion also covers junction/path aliases.
-// The OS releases the handle on termination; stale diagnostic text is not a lock.
+// No code deletes a lock file: that could create two independent locks. The OS
+// deletes it when the holder's handle closes, also on termination. File-sharing
+// exclusion also covers junction/path aliases.
 internal sealed class FileLease : IDisposable
 {
     private readonly FileStream stream;
@@ -96,7 +96,7 @@ internal sealed class FileLease : IDisposable
         {
             try
             {
-                var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+                var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, FileOptions.DeleteOnClose);
                 try
                 {
                     var text = JsonSerializer.Serialize(new { Pid = Environment.ProcessId, SessionId = SessionRuntime.Id,
@@ -106,45 +106,18 @@ internal sealed class FileLease : IDisposable
                 }
                 catch { stream.Dispose(); throw; }
             }
-            catch (IOException ex) when (IsSharingConflict(ex) && watch.Elapsed < (wait ?? TimeSpan.Zero)) { Thread.Sleep(30); }
-            catch (IOException ex) when (IsSharingConflict(ex))
+            catch (Exception ex) when (IsHeld(ex) && watch.Elapsed < (wait ?? TimeSpan.Zero)) { Thread.Sleep(30); }
+            catch (Exception ex) when (IsHeld(ex))
             {
                 string owner; try { owner = AtomicFile.ReadText(path); } catch { owner = "owner information unavailable"; }
                 throw new LeaseContentionException(resource, path, owner, wait ?? TimeSpan.Zero, ex);
             }
         }
     }
-    private static bool IsSharingConflict(IOException error) => (error.HResult & 0xFFFF) is 32 or 33;
+    // Access denied: released while another session read the owner (delete pending).
+    private static bool IsHeld(Exception error) => error is UnauthorizedAccessException || error is IOException && (error.HResult & 0xFFFF) is 32 or 33;
     public void Dispose() => stream.Dispose();
 }
 
 internal sealed class LeaseContentionException(string resource, string path, string owner, TimeSpan waited, Exception inner)
     : IOException($"Another XEP session is using {resource}. Wait for that session to finish, then retry. Wait limit: {waited.TotalSeconds:g} seconds. Lock: {path}; {owner}", inner);
-
-internal static class CompletedScriptCache
-{
-    // New cache namespace: older builds may write directly into their legacy
-    // directories. No new reader consumes one of those possibly partial files.
-    public static string? Get(string directory, string key, Func<string?> create)
-    {
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, key + ".psc");
-        if (File.Exists(path)) return AtomicFile.ReadText(path);
-        using var lease = AcquireProducer(directory, key, TimeSpan.FromSeconds(35));
-        if (File.Exists(path)) return AtomicFile.ReadText(path);
-        var completed = create();
-        if (!string.IsNullOrWhiteSpace(completed)) AtomicFile.WriteText(path, completed);
-        return completed;
-    }
-
-    internal static FileLease AcquireProducer(string directory, string key, TimeSpan wait)
-    {
-        try { return FileLease.Acquire(Path.Combine(directory, key + ".lock"), "script cache " + key, wait); }
-        catch (LeaseContentionException ex)
-        {
-            throw new IOException($"Timed out waiting for another XEP script-cache producer ({key}) after {wait.TotalSeconds:g} seconds. "
-                + "Wait for the reported producer session/PID to finish, then retry the scan. Changing the output folder does not resolve shared script-cache contention. "
-                + "Do not delete a live cache lock. " + ex.Message, ex);
-        }
-    }
-}

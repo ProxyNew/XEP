@@ -11,7 +11,7 @@ internal enum GenerationStage { Planning, FinalizingPlans, Records, Cloning, Che
 // keeps concurrent private runs and test operations independent.
 internal static class OperationProgress
 {
-    private static readonly AsyncLocal<Reporter?> Current = new();
+    internal static readonly AsyncLocal<Reporter?> Current = new();
     // Fixed UI shares, not timing predictions. Counted work fills its own share;
     // uncounted work holds at the stage boundary until the next stage begins.
     private static readonly double[] GenerationStarts = [0, .25, .30, .50, .70, .75, .85, .90, .94, .97, .99, 1];
@@ -36,7 +36,7 @@ internal static class OperationProgress
                 total > 0 ? (double)position / total : null, position == total);
     }
 
-    private sealed class Reporter(Action<OperationProgressUpdate> report, Reporter? previous, ProgressKind kind, double initialFraction) : IDisposable
+    internal sealed class Reporter(Action<OperationProgressUpdate> report, Reporter? previous, ProgressKind kind, double initialFraction) : IDisposable
     {
         private string message = "";
         private double? fraction = kind == ProgressKind.Preview ? null : Math.Clamp(initialFraction, 0, 1);

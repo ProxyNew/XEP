@@ -10,7 +10,7 @@ public static partial class PatcherEngine
     // Object identity matters: an override copy may share a FormKey but differ in data.
     // Facts may be read from parallel review workers. Each value is computed outside
     // the lock and published once; every value is a pure function of the record.
-    private sealed class EquipmentFacts(IMajorRecordGetter item, Catalog catalog)
+    internal sealed class EquipmentFacts(IMajorRecordGetter item, Catalog catalog)
     {
         private sealed record Known<T>(T Value);
         private Known<string[]>? labels;
@@ -35,10 +35,10 @@ public static partial class PatcherEngine
 
     private static EquipmentFacts Facts(IMajorRecordGetter item, Catalog catalog)
         => SharedMemo(catalog.EquipmentFacts, item, () => new EquipmentFacts(item, catalog));
-    private static EquipmentShape? CachedShape(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).Shape;
-    private static EquipmentClass? CachedClass(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).Class;
-    private static int CachedValue(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).Value;
-    private static string CachedCharge(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).ChargeText;
+    internal static EquipmentShape? CachedShape(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).Shape;
+    internal static EquipmentClass? CachedClass(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).Class;
+    internal static int CachedValue(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).Value;
+    internal static string CachedCharge(IMajorRecordGetter item, Catalog catalog) => Facts(item, catalog).ChargeText;
     private static string PluginName(ModKey key, Catalog catalog)
         => catalog.PluginNames.TryGetValue(key, out var name) ? name : catalog.PluginNames[key] = key.FileName.String;
 }

@@ -7,7 +7,7 @@ public static partial class PatcherEngine
 {
     private sealed record LeveledEntryIdentity(FormKey Reference, short Level, short Count, bool HasData);
     private sealed record ProvenancedLeveledEntry(LeveledItemEntry Entry, ModKey Provenance);
-    private sealed record LeveledListConflictResolution(
+    internal sealed record LeveledListConflictResolution(
         FormKey List,
         ILeveledItemGetter Winning,
         LeveledItem Resolved,

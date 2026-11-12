@@ -8,7 +8,7 @@ public static partial class PatcherEngine
 {
     // Built only when keyword removal is present, from winning loaded equipment.
     // Repeated predicates reuse their intersection across recipients and rules.
-    private sealed class CdfKeywordMembership
+    internal sealed class CdfKeywordMembership
     {
         private readonly HashSet<FormKey> equipment = [];
         private readonly Dictionary<FormKey, HashSet<FormKey>> keywordSets = [];
@@ -49,7 +49,7 @@ public static partial class PatcherEngine
         public FormKey[] Match(FormKey[] keywords) => Matches(keywords).Possible;
         public IReadOnlySet<FormKey> Certain(FormKey[] keywords) => Matches(keywords).Certain;
 
-        private (FormKey[] Possible, IReadOnlySet<FormKey> Certain) Matches(FormKey[] keywords)
+        internal (FormKey[] Possible, IReadOnlySet<FormKey> Certain) Matches(FormKey[] keywords)
         {
             var identity = string.Join(',', keywords);
             if (matches.TryGetValue(identity, out var cached)) return cached;

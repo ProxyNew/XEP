@@ -11,9 +11,8 @@ public static partial class PatcherEngine
                 .SelectMany(u => SpecializedGraph(catalog).Endpoints(u.OriginalTarget)))
             .Where(u => u.Known).Distinct().ToArray();
 
-    // A root cannot be isolated through an incoming LVLI. Use the existing semantic
-    // context rules, not exact actor identity: higher-tier actors may carry only
-    // enchanted equipment. Scope-only passengers cannot authorize a route alone.
+    // A root cannot be isolated through an incoming LVLI. A consumer matches only
+    // through its own uses; scope-only passengers cannot authorize a route alone.
     private static string? ParentlessConsumerProblem(FormKey source, FormKey target, Catalog catalog,
         TypedLootUse[]? sourceUses = null, bool controlled = false, Func<TypedLootUse, bool>? observedMatch = null)
     {

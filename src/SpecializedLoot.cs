@@ -13,7 +13,7 @@ public static partial class PatcherEngine
     // the load order's consumers, never from list names or plugins.
     private const int GeneralLootContexts = 2;
 
-    private static HashSet<FormKey> LootAncestors(FormKey key, Catalog catalog) => SharedMemo(catalog.LootAncestorCache, key, () =>
+    internal static HashSet<FormKey> LootAncestors(FormKey key, Catalog catalog) => SharedMemo(catalog.LootAncestorCache, key, () =>
     {
         var found = new HashSet<FormKey>(); var queue = new Queue<FormKey>(); queue.Enqueue(key);
         while (queue.TryDequeue(out var next))
@@ -39,7 +39,7 @@ public static partial class PatcherEngine
         return catalog.LootConsumers = index.Keys.ToHashSet();
     }
 
-    private static bool IsGeneralRole(FormKey key, Catalog catalog) => GeneralLootEvidence(key, catalog).General;
+    internal static bool IsGeneralRole(FormKey key, Catalog catalog) => GeneralLootEvidence(key, catalog).General;
 
     // Distinct consumer contexts reached from a list through its winning ancestors. Unique or
     // actor-scoped uses never count. Quest script references are not consumers (scripts reference
@@ -72,14 +72,14 @@ public static partial class PatcherEngine
 
     // Only the unenchanted source's own route counts. Existing enchanted siblings,
     // fixed actor/container equipment and crafting recipes are not base loot distribution.
-    private static bool HasBaseLootRoute(FormKey key, Catalog catalog)
+    internal static bool HasBaseLootRoute(FormKey key, Catalog catalog)
         => catalog.CdfInventory?.DirectByPayload.Contains(key) == true
             || catalog.DirectParents.GetValueOrDefault(key, []).Any(p =>
                 catalog.Lists.TryGetValue(p.List, out var list) && !list.IsDeleted)
             || catalog.ScriptUnlocks.GetValueOrDefault(key, []).Any(u =>
                 catalog.Lists.TryGetValue(u.OriginalTarget, out var target) && !target.IsDeleted);
 
-    private static string PlainLootEvidence(string value)
+    internal static string PlainLootEvidence(string value)
     {
         if (string.IsNullOrWhiteSpace(value)) return "No supported route was found.";
         var text = value.Trim().TrimEnd('.');
@@ -138,7 +138,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private static void ApplySpecializedChoices(List<CandidateItem> candidates, Catalog catalog, ProfileSettings profile)
+    internal static void ApplySpecializedChoices(List<CandidateItem> candidates, Catalog catalog, ProfileSettings profile)
         => ApplyReview(candidates, catalog, profile, prefetchAssessments: false);
 
     // Every profile setting ApplySpecializedChoices reads.
@@ -149,8 +149,6 @@ public static partial class PatcherEngine
     // candidates and access state; repeating it would recompute the same values.
     private static void EnsureSpecializedChoices(List<CandidateItem> candidates, Catalog catalog, ProfileSettings profile)
     {
-        SettingsStore.MigrateOtherMaterialChoice(profile);
-        SettingsStore.MigrateRuntimeMirrorChoice(profile);
         if (catalog.ReviewedChoices != SpecializedReviewChoices(profile)) ApplySpecializedChoices(candidates, catalog, profile);
     }
 
@@ -163,8 +161,6 @@ public static partial class PatcherEngine
     {
         using var timing = PhaseTiming.Measure("specialized-assessment");
         catalog.ReviewedChoices = null;
-        SettingsStore.MigrateOtherMaterialChoice(profile);
-        SettingsStore.MigrateRuntimeMirrorChoice(profile);
         catalog.LootAncestorCache.Clear(); catalog.LootConsumerCountCache.Clear(); catalog.MerchantAvailabilityCache.Clear();
         var consumers = LootConsumerKeys(catalog);
         AccessIndex index;
@@ -186,7 +182,7 @@ public static partial class PatcherEngine
             item.OriginalLocationsMode = SpecializedLootMode.ScriptDistribution;
             item.RecommendedSpecializedMode = SpecializedLootMode.ScriptDistribution;
             item.SpecializedRecommendation = "Follow script distribution (enchanted counterparts)";
-            item.HasSpecializedOverride = profile.SpecializedLootOverrides.TryGetValue(item.FormKey, out var saved) && Enum.IsDefined(saved);
+            item.HasSpecializedOverride = profile.SpecializedLootOverrides.TryGetValue(item.FormKey, out var saved);
             item.SpecializedMode = item.HasSpecializedOverride ? saved : SpecializedLootMode.ScriptDistribution;
             item.SpecializedDecisionReason = item.SpecializedRecommendationReason = item.LootReviewReason =
                 $"{chains.Length} accepted script insertion(s); counterparts are planned under the source's consumers, gates and level windows.";
@@ -292,7 +288,7 @@ public static partial class PatcherEngine
                 item.SpecializedDecisionReason = "CDF direct additions have a shared source and enchanted counterpart context; native conditions are retained.";
             }
             item.SpecializedRecommendationReason = item.SpecializedDecisionReason;
-            item.HasSpecializedOverride = profile.SpecializedLootOverrides.TryGetValue(item.FormKey, out var manual) && Enum.IsDefined(manual);
+            item.HasSpecializedOverride = profile.SpecializedLootOverrides.TryGetValue(item.FormKey, out var manual);
             item.SpecializedMode = item.HasSpecializedOverride ? manual : item.RecommendedSpecializedMode;
             item.GeneralizedLootEvidence = PlainLootEvidence(reason);
             item.LootReviewReason = assessment is null ? reason : item.SpecializedRecommendationReason;
@@ -340,7 +336,7 @@ public static partial class PatcherEngine
         => verdict.Outcome == AccessOutcome.Variants || profile.AllowOtherMaterialRoutes
             && verdict.Outcome is AccessOutcome.OtherMaterialOnly or AccessOutcome.MaterialUnknown;
 
-    private static HashSet<FormKey> PlannedLootAncestors(FormKey key, Catalog catalog)
+    internal static HashSet<FormKey> PlannedLootAncestors(FormKey key, Catalog catalog)
     {
         // This synchronous walk does not mutate planning state. Refresh once,
         // then visit only incoming additions instead of rescanning all edges
@@ -357,7 +353,7 @@ public static partial class PatcherEngine
         return found;
     }
 
-    private static void BuildSpecializedPlans(CandidateItem candidate, Catalog catalog, ProfileSettings profile, PlanningAdditions<VariantPlan> plans)
+    internal static void BuildSpecializedPlans(CandidateItem candidate, Catalog catalog, ProfileSettings profile, PlanningAdditions<VariantPlan> plans)
     {
         using var timing = PhaseTiming.Measure("plans.specialized");
         var key = FormKey.Factory(candidate.FormKey);
@@ -422,12 +418,8 @@ public static partial class PatcherEngine
         if (routes.Count == 0) { Skip(runtimeProblem ?? "no supported source pool with a winning inventory consumer (count-bearing UseAll, quest, extra-data and orphan pools are protected)"); return; }
         var cls = CachedClass(source, catalog);
         var shape = CachedShape(source, catalog);
-        var templates = cls is null ? null : catalog.TemplatesByClass.GetValueOrDefault(ClassKey(cls));
-        var broad = templates is not { Count: > 0 } && profile.BroadUnmatchedDistribution && shape is not null
-            && (cls is null || !IsOwnBaseMaterial(cls.Material));
-        if (broad) templates = catalog.Templates.Where(t => ShapeMatches(shape!, t.Class)).ToList();
-        var unrestricted = templates;
-        templates = SourceTemplates(key, templates, catalog);
+        var (unrestricted, broad) = ExactOrBroadTemplates(profile.BroadUnmatchedDistribution, cls, shape, catalog);
+        var templates = SourceTemplates(key, unrestricted, catalog);
         if (templates is not { Count: > 0 }) { Skip(unrestricted is { Count: > 0 } ? AuthorListLeavesNoTemplate : "no compatible enchantment templates"); return; }
         var selected = (broad ? TemplatesForBroadSource(source, templates, catalog) : TemplatesForExactSource(source, templates, catalog))
             .GroupBy(t => VariantIdentity(t.Item, t.Enchantment, catalog));
@@ -439,7 +431,7 @@ public static partial class PatcherEngine
         var count = 0;
         foreach (var group in selected)
         {
-            var template = group.OrderBy(t => profile.EnchantmentProviderPlugins.FindIndex(p => p.Equals(t.Enchantment.ModKey.FileName.String, StringComparison.OrdinalIgnoreCase)))
+            var template = group.OrderBy(t => ProviderRank(profile, t.Enchantment.ModKey))
                 .ThenBy(t => t.Item.FormKey).First();
             var existing = inventory.Where(i => OrdinaryEquipment(i, catalog.KeywordNames) && TryEnchantment(i, out var e)
                 && VariantIdentity(i, e, catalog) == group.Key).ToArray();

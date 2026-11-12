@@ -69,7 +69,7 @@ public static partial class PatcherEngine
                 && short.TryParse(args[1], out var level) && level > 0 && short.TryParse(args[2], out var count) && count > 0;
         }
         var log = Regex.Match(raw, @"(?i)^\s*Debug\s*\.\s*(Trace|TraceStack)\s*\(\s*""(?:\\.|[^""\\])*""\s*,\s*[0-9]+\s*\)\s*$");
-        if (log.Success && !SymbolShadowed(instance, function, "Debug")
+        if (log.Success && !SymbolShadowed(instance, "Debug")
             && NativeFrameContract(catalog, "Debug", log.Groups[1].Value, "", ["String", "Int"], true)) return true;
         var update = Regex.Match(line, @"(?i)^\s*(?:self\s*\.\s*)?(\w+)\s*\(([^()]*)\)\s*$");
         return update.Success && SplitArguments(update.Groups[2].Value).All(a => PurePrimitivePrefixValue(a, instance, function))

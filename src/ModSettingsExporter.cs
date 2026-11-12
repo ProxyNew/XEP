@@ -78,21 +78,19 @@ internal static class ModSettingsExporter
             return mod;
         }
         foreach (var (plugin, policy) in profile.Policies)
-            if (policy != PatchPolicy.Review) Mod(plugin).PatchPolicy = SettingsStore.NormalizePolicy(policy);
+            if (policy != PatchPolicy.Review) Mod(plugin).PatchPolicy = policy;
 
-        void Copy<T>(IReadOnlyDictionary<string, T> source, Func<ExportedModSettings, IDictionary<string, T>> target, Func<T, bool>? offered = null)
+        void Copy<T>(IReadOnlyDictionary<string, T> source, Func<ExportedModSettings, IDictionary<string, T>> target)
         {
             foreach (var (key, value) in source)
             {
-                if (offered is not null && !offered(value)) continue;
                 var form = FormKey.Factory(key);
                 target(Mod(form.ModKey.FileName.String)).Add(form.ToString(), value);
             }
         }
         Copy(profile.ItemOverrides, mod => mod.ItemOverrides);
         Copy(profile.MaterialFamilyOverrides, mod => mod.MaterialFamilyOverrides);
-        // Retired distribution modes are not offered choices and cannot be shipped.
-        Copy(profile.SpecializedLootOverrides, mod => mod.SpecializedLootOverrides, mode => SpecializedLootChoices.All.Any(c => c.Value == mode));
+        Copy(profile.SpecializedLootOverrides, mod => mod.SpecializedLootOverrides);
         Copy(profile.EnchantmentOverrides, mod => mod.EnchantmentOverrides);
         return mods.Values.ToArray();
     }
@@ -136,7 +134,7 @@ internal static class ModSettingsExporter
     {
         if (document.Plugins.Count == 0) throw new ArgumentException("Select at least one mod to export.");
         path = Path.GetFullPath(path);
-        if (new[] { SettingsStore.PathName, SettingsStore.DefaultPathName, SettingsStore.LegacyPathName }
+        if (new[] { SettingsStore.PathName, SettingsStore.DefaultPathName }
             .Any(settings => path.Equals(Path.GetFullPath(settings), StringComparison.OrdinalIgnoreCase)))
             throw new ArgumentException("Choose a separate export file. The patcher's settings file cannot be replaced by a rules file.");
         // A file over the reader's limits would be ignored as a whole, so refuse it here.

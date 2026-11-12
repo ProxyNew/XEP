@@ -23,11 +23,11 @@ public static partial class PatcherEngine
     // The completed prefix is never passed to selection, planning or output writing.
     // Loaded record getters and immutable input evidence can be shared; a pass owns
     // all changed adjacency, candidate state, decisions and graph-dependent caches.
-    private sealed class ScanAnalysis : ScanSnapshot
+    internal sealed class ScanAnalysis : ScanSnapshot
     {
         private LoadedGame? game;
         private IReadOnlyList<ISkyrimModGetter>? mods;
-        private AnalysisPass? prefix;
+        internal AnalysisPass? prefix;
         private bool stale;
         private string analysisInputs = "";
         private string catalogInputs = "";
@@ -35,12 +35,8 @@ public static partial class PatcherEngine
         private Catalog? baseCatalog;
         // The last reviewed catalog: its script and slice analysis (load-order facts plus
         // gates for its patched-mod set) seeds the next selection copy.
-        private Catalog? scriptSource;
-        // Review assessments depend on materials and origins through the graph and access
-        // verdicts, so each material/origin set keeps its own reuse cache.
-        private readonly Dictionary<string, ReviewAssessmentCache> assessmentsByTemplates = [];
-        public int ReusedAssessments => assessmentsByTemplates.Values.Sum(c => c.Reused);
-        private (string Choices, AnalysisPass State)? review;
+        internal Catalog? scriptSource;
+        internal (string Choices, AnalysisPass State)? review;
         private PlannedPass? retainedPreview;
         private readonly SkyPatcherInputReport skyPatcher;
         private readonly CdfInputReport cdf;
@@ -79,16 +75,18 @@ public static partial class PatcherEngine
             // One winner index serves SkyPatcher capture, the script-asset prefetch and
             // availability. Asset resolution reads only load-order facts, so it runs
             // while SkyPatcher inputs are captured and the catalog is built.
-            using (PhaseTiming.Measure("load-order-winners")) winners = LoadOrderWinners(mods);
+            var editorIds = new List<(string EditorId, FormKey Key)>();
+            using (PhaseTiming.Measure("load-order-winners")) winners = LoadOrderWinners(mods, editorIds);
             if (ScriptTextOverride is null) scriptAssets = PendingScriptAssets.Start(settings.DataFolder ?? "", mods, winners);
-            // SkyPatcher and LLOS read the same loaded records and native EditorID cache.
-            var resolver = new NativeFormResolver(mods, () => winners);
-            skyPatcher = inputs ?? SkyPatcherInputs.CaptureWith(settings.DataFolder, mods, resolver);
-            skyPatcher = WithFurnitureListIrrelevance(skyPatcher, resolver, winners, scriptAssets);
-            cdf = cdfInputs ?? CdfInputs.Capture(cdfInputData ?? settings.DataFolder, mods, () => winners);
-            llos = llosInputs ?? LlosInputs.Capture(settings.DataFolder, mods, () => winners, resolver);
-            cid = cidInputs ?? CidInputs.Capture(settings.DataFolder, mods, () => winners, resolver);
-            spid = spidInputs ?? SpidInputs.Capture(settings.DataFolder, mods, () => winners, resolver);
+            // Every framework capture reads one per-scan input environment: the Data folder listing, po3_Tweaks,
+            // the load-order winners and the EditorID index. The private CDF input override has its own folder.
+            var environment = FrameworkInputs.Create(settings.DataFolder, mods, winners, editorIds, indexEditorIds: inputs is not null);
+            skyPatcher = inputs ?? SkyPatcherInputs.Capture(environment);
+            skyPatcher = WithFurnitureListIrrelevance(skyPatcher, environment.Resolver, winners, scriptAssets);
+            cdf = cdfInputs ?? CdfInputs.Capture(cdfInputData is null ? environment : FrameworkInputs.Create(cdfInputData, mods, winners, editorIds));
+            llos = llosInputs ?? LlosInputs.Capture(environment);
+            cid = cidInputs ?? CidInputs.Capture(environment);
+            spid = spidInputs ?? SpidInputs.Capture(environment);
             if (settings.ApplyAuthorRules && !string.IsNullOrWhiteSpace(settings.DataFolder))
                 author = AuthorDefaults.Build(AuthorRules.LoadInstalled(settings.DataFolder,
                     new LoadedAuthorRecords(mods.Select(m => m.ModKey).ToHashSet(), winners)), mods);
@@ -99,27 +97,33 @@ public static partial class PatcherEngine
         // returns the engine's own profile writes to the saved settings.
         public T WithAuthor<T>(AppSettings settings, Func<AppSettings, AuthorApplication?, T> run)
         {
-            if (author is null || author.IsEmpty) return run(settings, null);
-            var (effective, applied) = AuthorDefaults.Apply(settings, author);
-            var result = run(effective, applied);
-            AuthorDefaults.CopyBack(effective, settings);
-            return result;
+            try
+            {
+                if (author is null || author.IsEmpty) return run(settings, null);
+                var (effective, applied) = AuthorDefaults.Apply(settings, author);
+                var result = run(effective, applied);
+                AuthorDefaults.CopyBack(effective, settings);
+                return result;
+            }
+            catch (Exception ex) when (mods is not null && UnreadableRecord(mods, ex) is { } named)
+            {
+                throw new UnreadableRecordException($"{named} cannot be read: {ex.GetBaseException().Message}\n\n"
+                    + "Repair the record in xEdit, or report it to the author of that plugin.", ex);
+            }
         }
 
         private void Analyse(AppSettings settings)
         {
-            if (settings.CurrentProfile.UseLoadOrderProviderDefaults is not false)
+            if (settings.CurrentProfile.UseLoadOrderProviderDefaults)
             {
                 var providers = DiscoverProvidersLoaded(mods!, settings.CurrentProfile);
                 if (providers.Count == 0) throw new InvalidOperationException("No usable enchantment origins are available in the active load order.");
             }
-            var catalog = BuildNativeProfileCatalog(mods!, settings.CurrentProfile, skyPatcher, llos);
+            var catalog = BuildProfileCatalogOver(mods!, settings.CurrentProfile, skyPatcher, llos, winners!);
             catalog.Cdf = cdf;
             catalog.Llos = llos;
             catalog.Cid = cid;
             catalog.Spid = spid;
-            // Reuse the winner index input capture already built for these plugins.
-            catalog.RuntimeWinningRecords ??= winners;
             catalog.PrefetchedScriptAssets = Interlocked.Exchange(ref scriptAssets, null);
             catalog.DistributionNotes.AddRange(skyPatcher.Diagnostics);
             catalog.DistributionNotes.AddRange(cdf.Diagnostics);
@@ -145,7 +149,6 @@ public static partial class PatcherEngine
             // The load-order analysis above is kept; selection-dependent state is
             // rebuilt on copies of it (Select), so selection changes skip this work.
             baseCatalog = catalog;
-            assessmentsByTemplates.Clear();
             scriptSource = null;
             catalogInputs = CatalogInputs(settings);
             baseTemplateInputs = TemplateInputs(settings);
@@ -156,16 +159,15 @@ public static partial class PatcherEngine
 
         // Template selection, author allow-lists and candidates on a fresh copy of the
         // load-order analysis. Earlier prefixes, reviews and previews are discarded.
-        private void Select(AppSettings settings)
+        internal void Select(AppSettings settings)
         {
             using var timing = PhaseTiming.Measure("analysis.selection");
             var profile = settings.CurrentProfile;
             // Material families and origins only shape material resolution and the usable
             // templates; availability and CDF analysis of the load order do not read them.
             var changedTemplates = TemplateInputs(settings) != baseTemplateInputs;
-            if (changedTemplates && profile.UseLoadOrderProviderDefaults is not false && DiscoverProvidersLoaded(mods!, profile).Count == 0)
+            if (changedTemplates && profile.UseLoadOrderProviderDefaults && DiscoverProvidersLoaded(mods!, profile).Count == 0)
                 throw new InvalidOperationException("No usable enchantment origins are available in the active load order.");
-            var templateKey = TemplateInputs(settings);
             Catalog catalog;
             if (changedTemplates)
             {
@@ -178,8 +180,6 @@ public static partial class PatcherEngine
             // reuse the last review's, and SetPatchedItems keeps its gates only while the
             // patched-mod set is unchanged.
             if (scriptSource is not null) { catalog.AdoptScriptAnalysis(scriptSource); ScriptReuses++; }
-            if (!assessmentsByTemplates.TryGetValue(templateKey, out var assessments)) assessmentsByTemplates[templateKey] = assessments = new();
-            catalog.AssessmentReuse = assessments;
             ApplyEnchantmentRecommendations(catalog, profile);
             prefix = new(catalog, FindDistributionCandidates(mods!, catalog, profile));
             analysisInputs = AnalysisInputs(settings);
@@ -316,7 +316,7 @@ public static partial class PatcherEngine
                 var pass = Fork(baseline);
                 foreach (var (source, family) in families) pass.Catalog.BestAvailableFamilies[source] = family;
                 var bundle = BuildPlans(settings, policies, pass.Catalog, pass.Candidates, progress);
-                FinalizeProtectedRuntimePlacements(bundle.Plans, pass.Catalog, settings.CurrentProfile.WarningListEntries);
+                FinalizeProtectedRuntimePlacements(bundle.Plans, pass.Catalog);
                 var advanced = false;
                 foreach (var (source, family) in pass.Catalog.BestAvailableFamilies.OrderBy(x => x.Key))
                 {
@@ -372,18 +372,18 @@ public static partial class PatcherEngine
         }
     }
 
-    private sealed record AnalysisPass(Catalog Catalog, List<CandidateItem> Candidates);
-    private sealed record PlannedPass(AnalysisPass Pass, PlanBundle Bundle)
+    internal sealed record AnalysisPass(Catalog Catalog, List<CandidateItem> Candidates);
+    internal sealed record PlannedPass(AnalysisPass Pass, PlanBundle Bundle)
     {
         public PreviewDerived? Derived { get; init; }
     }
 
     // Deterministic functions of the retained pass and settings; Generate reuses
     // them instead of recomputing projection, merging, impacts and fingerprint.
-    private sealed record PreviewDerived(StaticEntryProjection Projection, Dictionary<FormKey, FormKey> Merged,
+    internal sealed record PreviewDerived(StaticEntryProjection Projection, Dictionary<FormKey, FormKey> Merged,
         List<ListImpact> Impacts, string Fingerprint, bool FullOutputPlugin);
 
-    private static ScanAnalysis AnalyzeLoaded(AppSettings settings, IReadOnlyList<ISkyrimModGetter> mods)
+    internal static ScanAnalysis AnalyzeLoaded(AppSettings settings, IReadOnlyList<ISkyrimModGetter> mods)
         => new(settings, mods);
 
     private sealed class LoadedAuthorRecords(IReadOnlySet<ModKey> loaded,
@@ -402,7 +402,7 @@ public static partial class PatcherEngine
 
     internal static AuthorOverlay? AuthorOverlayOf(ScanSnapshot snapshot) => Loaded(snapshot).Author;
 
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
         public Catalog() => ObservePlanningChanges();
 
@@ -421,10 +421,7 @@ public static partial class PatcherEngine
             // This copy's receiver state is still the load order's, before any gates.
             GateFreeReceivers ??= (ScriptReceiverLevels.ToDictionary(x => x.Key, x => new HashSet<short>(x.Value)), new HashSet<FormKey>(ScriptUnresolvedReceivers));
             Fill(RuntimeScriptInstances, source.RuntimeScriptInstances);
-            List(RuntimeBindingChecks, source.RuntimeBindingChecks);
             Fill(RuntimeHolderAssets, source.RuntimeHolderAssets);
-            Fill(RuntimeHolderAttachments, source.RuntimeHolderAttachments);
-            List(RuntimeHolderViewChecks, source.RuntimeHolderViewChecks);
             Fill(RuntimeHolderViewResults, source.RuntimeHolderViewResults);
             Fill(RuntimeListRootHolderVerdicts, source.RuntimeListRootHolderVerdicts);
             Fill(RuntimeBindings, source.RuntimeBindings);
@@ -444,7 +441,6 @@ public static partial class PatcherEngine
             foreach (var (mod, flow) in source.SliceFlows) SliceFlows[mod] = flow.CopyForPass();
             Fill(SliceSyntaxBodies, source.SliceSyntaxBodies);
             Fill(RuntimeSliceInstances, source.RuntimeSliceInstances);
-            Set(RuntimeHolderChecks, source.RuntimeHolderChecks);
             Fill(RuntimeNativeContracts, source.RuntimeNativeContracts);
             Fill(RuntimeNativeContractProblems, source.RuntimeNativeContractProblems);
             Fill(RuntimeFrameEvidence, source.RuntimeFrameEvidence);
@@ -494,15 +490,10 @@ public static partial class PatcherEngine
             RuntimeBaseScripts = source.RuntimeBaseScripts;
             RuntimeBaseScriptDiagnosticEvidence = source.RuntimeBaseScriptDiagnosticEvidence;
             RuntimeScriptInstances = new(source.RuntimeScriptInstances, source.RuntimeScriptInstances.Comparer);
-            RuntimeBindingChecks = new(source.RuntimeBindingChecks);
-            RuntimePayloadExpressions = source.RuntimePayloadExpressions;
-            RuntimeLocalArrayIdentities = source.RuntimeLocalArrayIdentities;
             RuntimeWinningRecords = source.RuntimeWinningRecords;
             RuntimeUnclosedHolderIndex = source.RuntimeUnclosedHolderIndex is null ? null : new(source.RuntimeUnclosedHolderIndex, source.RuntimeUnclosedHolderIndex.Comparer);
             RuntimeNonQuestHolderIndex = source.RuntimeNonQuestHolderIndex is null ? null : new(source.RuntimeNonQuestHolderIndex, source.RuntimeNonQuestHolderIndex.Comparer);
             RuntimeHolderAssets = new(source.RuntimeHolderAssets, source.RuntimeHolderAssets.Comparer);
-            RuntimeHolderAttachments = new(source.RuntimeHolderAttachments, source.RuntimeHolderAttachments.Comparer);
-            RuntimeHolderViewChecks = new(source.RuntimeHolderViewChecks);
             RuntimeHolderViewResults = new(source.RuntimeHolderViewResults, source.RuntimeHolderViewResults.Comparer);
             RuntimeFormListHolderParents = source.RuntimeFormListHolderParents is null ? null : new(source.RuntimeFormListHolderParents, source.RuntimeFormListHolderParents.Comparer);
             RuntimeAuthoredListCarriers = source.RuntimeAuthoredListCarriers is null ? null : new(source.RuntimeAuthoredListCarriers, source.RuntimeAuthoredListCarriers.Comparer);
@@ -525,7 +516,6 @@ public static partial class PatcherEngine
             SliceFlows = source.SliceFlows.ToDictionary(x => x.Key, x => x.Value.CopyForPass());
             SliceSyntaxBodies = source.SliceSyntaxBodies;
             RuntimeSliceInstances = new(source.RuntimeSliceInstances, source.RuntimeSliceInstances.Comparer);
-            RuntimeHolderChecks = source.RuntimeHolderChecks;
             RuntimeNativeContracts = new(source.RuntimeNativeContracts, source.RuntimeNativeContracts.Comparer);
             RuntimeNativeContractProblems = new(source.RuntimeNativeContractProblems, source.RuntimeNativeContractProblems.Comparer);
             RuntimeFrameEvidence = new(source.RuntimeFrameEvidence, source.RuntimeFrameEvidence.Comparer);
@@ -564,7 +554,6 @@ public static partial class PatcherEngine
             LootConsumerCountCache = new(source.LootConsumerCountCache, source.LootConsumerCountCache.Comparer);
             AvailabilityInitialized = source.AvailabilityInitialized;
             SpecializedEvidence = source.SpecializedEvidence is null ? null : new(source.SpecializedEvidence);
-            AssessmentReuse = source.AssessmentReuse;
             GateFreeReceivers = source.GateFreeReceivers;
             AdoptedGateReceivers = source.AdoptedGateReceivers;
             // Built with the graph; a reused graph does not rebuild it.
@@ -592,10 +581,6 @@ public static partial class PatcherEngine
             SourceEnchantmentAllow = source.SourceEnchantmentAllow;
             SourceDestinationAllow = source.SourceDestinationAllow;
             ExactTemplateSelections = source.ExactTemplateSelections.ToDictionary(x => x.Key, x => new Dictionary<(int, string?, bool), EnchantedTemplate[]>(x.Value));
-            DestinationCache = new(source.DestinationCache, source.DestinationCache.Comparer);
-            NestedItemCache = new(source.NestedItemCache, source.NestedItemCache.Comparer);
-            NestedListCache = new(source.NestedListCache, source.NestedListCache.Comparer);
-            DestinationSubtypes = source.DestinationSubtypes.ToDictionary(x => x.Key, x => x.Value is null ? null : new HashSet<string>(x.Value, x.Value.Comparer));
             ExistingVariantCache = new(source.ExistingVariantCache, source.ExistingVariantCache.Comparer);
             ObjectEffects = source.ObjectEffects;
             MagicEffectRecords = source.MagicEffectRecords;

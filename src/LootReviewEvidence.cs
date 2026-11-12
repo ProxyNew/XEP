@@ -7,7 +7,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed record LootConsumerEvidence(FormKey Record, string EditorId, string Role);
+    internal sealed record LootConsumerEvidence(FormKey Record, string EditorId, string Role);
 
     private static int LootConsumerCount(FormKey list, Catalog catalog)
     {

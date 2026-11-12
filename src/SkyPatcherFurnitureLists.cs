@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
+using Mutagen.Bethesda.Plugins.Exceptions;
 using Mutagen.Bethesda.Plugins.Records;
 using Mutagen.Bethesda.Skyrim;
 
@@ -12,7 +13,7 @@ public static partial class PatcherEngine
 {
     // A negative footprint proof, not a FormList distribution interpreter.
     // Every enabled FormList rule must stay inside the proved furniture surface.
-    private static SkyPatcherInputReport WithFurnitureListIrrelevance(SkyPatcherInputReport inputs,
+    internal static SkyPatcherInputReport WithFurnitureListIrrelevance(SkyPatcherInputReport inputs,
         NativeFormResolver resolver, Dictionary<FormKey, (ISkyrimMajorRecordGetter Record, ModKey Plugin)> winners,
         PendingScriptAssets? pending)
     {
@@ -55,13 +56,29 @@ public static partial class PatcherEngine
             }
         }
         var texts = new Dictionary<string, (string? Text, string Evidence)>(StringComparer.OrdinalIgnoreCase);
+        // One parallel pass keeps, in winner order, each record that links to a target or
+        // fails to read; the walk below skipped all others and still meets each failure in
+        // order. Record reads are memory-backed or open their own file stream; a plugin's
+        // shared stream is read under a lock.
+        var linking = winners.Values.AsParallel().AsOrdered().Where(w =>
+        {
+            try { return !w.Record.IsDeleted && Links(w.Record).Any(l => targets.Contains(l.FormKey)); }
+            catch (Exception) { return true; }
+        }).ToArray();
         foreach (var target in targets.Order())
         {
             var consumers = 0;
-            foreach (var (record, _) in winners.Values)
+            foreach (var (record, plugin) in linking)
             {
-                if (record.IsDeleted) continue;
-                var links = record.EnumerateFormLinks().Count(l => l.FormKey == target);
+                int links;
+                // A record Mutagen cannot read may link to the target, unless its bytes cannot
+                // name it. Its nested records are winners of their own and are met in this walk.
+                try { links = Links(record).Count(l => l.FormKey == target); }
+                catch (Exception)
+                {
+                    if (!RawLinks(record, plugin, resolver.Mods).Contains(target)) continue;
+                    return inputs;
+                }
                 if (links == 0) continue;
                 // DIAL enumerates nested INFO links too. Inspect its own fields
                 // separately, then inspect the winning INFOs below.
@@ -93,7 +110,7 @@ public static partial class PatcherEngine
                         if (ScriptTextOverride is not null) asset = ScriptTextOverride(script.Name);
                         else if (pending is not null)
                         {
-                            var assets = pending.Work.GetAwaiter().GetResult().Assets;
+                            var assets = pending.Work.GetAwaiter().GetResult();
                             var text = assets.Decompile(script.Name, out var detail);
                             asset = (text, detail);
                         }
@@ -124,6 +141,19 @@ public static partial class PatcherEngine
                     ? new("formList", text, "editorid-cache-unavailable", null)
                 : SkyPatcherInputs.Resolve(resolver, "formList", text, expected);
         static string Digest(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+        // Mutagen types an inventory entry's owner through a per-plugin cache that stays alive
+        // with the plugin. An owner is an NPC or a faction, never a list: keep only the item links.
+        // The copy reads every field, also those without links; one it cannot read falls back to the plain links.
+        static IEnumerable<IFormLinkGetter> Links(ISkyrimMajorRecordGetter record)
+        {
+            try
+            {
+                if (record is IContainerGetter c) return c.DeepCopy(new Container.TranslationMask(true) { Items = false }).EnumerateFormLinks().Concat(c.Items?.Select(i => i.Item.Item) ?? []);
+                if (record is INpcGetter n) return n.DeepCopy(new Npc.TranslationMask(true) { Items = false }).EnumerateFormLinks().Concat(n.Items?.Select(i => i.Item.Item) ?? []);
+            }
+            catch (RecordException) { }
+            return record.EnumerateFormLinks();
+        }
     }
 
     private static bool FurnitureOwnershipConsumer(string text, string property, IScriptEntryGetter binding, NativeFormResolver resolver, IScriptFragmentsGetter? fragments)

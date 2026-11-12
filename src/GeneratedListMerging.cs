@@ -13,7 +13,7 @@ public static partial class PatcherEngine
     // generated lists compare by their own class. Lists touched by runtime insertions can
     // change in game, and entries with metadata are not compared, so both keep their own
     // records. Returns duplicate -> representative (the first in planning order).
-    private static Dictionary<FormKey, FormKey> IdenticalGeneratedLists(Catalog catalog, StaticEntryProjection projection)
+    internal static Dictionary<FormKey, FormKey> IdenticalGeneratedLists(Catalog catalog, StaticEntryProjection projection)
     {
         var runtime = catalog.RuntimePlacements.SelectMany(r => new[] { r.Target.List, r.Child }).ToHashSet();
         var classIds = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -73,7 +73,7 @@ public static partial class PatcherEngine
     // (keeping its own level and count). Absorbed: a highest-eligible level window whose
     // other entry is a single-use, single-entry control list takes that list's Global and
     // Chance None and its entry; the control roll moves one level up a single path.
-    private sealed record GeneratedListCollapse(Dictionary<FormKey, ProjectedStaticEntry> Inlined,
+    internal sealed record GeneratedListCollapse(Dictionary<FormKey, ProjectedStaticEntry> Inlined,
         Dictionary<FormKey, ProjectedStaticEntry> AbsorbedChildren, Dictionary<FormKey, FormKey> Absorbing,
         Dictionary<FormKey, List<FormKey>> HolderParents)
     {
@@ -113,7 +113,7 @@ public static partial class PatcherEngine
         }
     }
 
-    private static GeneratedListCollapse CollapseGeneratedLists(Catalog catalog, StaticEntryProjection projection, Dictionary<FormKey, FormKey> merged)
+    internal static GeneratedListCollapse CollapseGeneratedLists(Catalog catalog, StaticEntryProjection projection, Dictionary<FormKey, FormKey> merged)
     {
         FormKey Canonical(FormKey key) => merged.GetValueOrDefault(key, key);
         // Lists that consumers other than written leveled-list entries hold must stay records.

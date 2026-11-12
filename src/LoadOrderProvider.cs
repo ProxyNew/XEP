@@ -14,15 +14,32 @@ public sealed class LoadedGame : IDisposable
     public LoadedGame(IGameEnvironment<ISkyrimMod, ISkyrimModGetter> environment)
     {
         _environment = environment;
-        Mods = environment.LoadOrder.ListedOrder.Where(x => x.Enabled)
-            .Select(x => x.Mod ?? throw new IOException($"Could not load {x.ModKey}.")).ToArray();
+        var listed = environment.LoadOrder.ListedOrder.Where(x => x.Enabled).ToArray();
+        var missing = listed.Where(x => x.Mod is null).Select(x => x.ModKey).ToArray();
+        if (missing.Length > 0)
+            throw new DataFolderMismatchException(
+                $"XEnchantmentPatcher could not find {missing.Length} of the {listed.Length} plugins enabled in your load order.\n"
+                + $"Missing: {string.Join(", ", missing.Take(3))}{(missing.Length > 3 ? $" and {missing.Length - 3} more" : "")}\n\n"
+                + $"It looked in this Data folder:\n{environment.DataFolderPath}\n\n"
+                + "Usually this is the wrong Data folder for your load order.\n\n"
+                + "To fix it, close XEnchantmentPatcher and start it again from Mod Organizer 2 (MO2). "
+                + "In the first window, choose the Data folder inside the game folder MO2 uses. "
+                + "To find that folder, open MO2's folder menu and choose \"Open Game folder\". "
+                + "For a Wabbajack list, it is usually the \"Stock Game\" folder.\n\n"
+                + "If only one or two plugins are missing, enable or reinstall the mods that provide them, or disable those plugins.");
+        Mods = listed.Select(x => x.Mod!).ToArray();
     }
     public void Dispose() => _environment.Dispose();
 }
 
+// The message tells the player the fix, so it is shown without a stack trace.
+public sealed class DataFolderMismatchException(string message) : IOException(message);
+public sealed class OutputInstallException(string message) : IOException(message);
+public sealed class UnreadableRecordException(string message, Exception inner) : Exception(message, inner);
+
 public static class LoadOrderProvider
 {
-    private static readonly Dictionary<string, ModKey[]> sessionOrders = new(StringComparer.OrdinalIgnoreCase);
+    internal static readonly Dictionary<string, ModKey[]> sessionOrders = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object orderGate = new();
 
     public static LoadedGame Load(AppSettings settings, string? outputName = null)

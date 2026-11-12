@@ -3,7 +3,6 @@
         <local:BusyIcon Width="112" Height="112" Margin="0,8,0,18" />
         <TextBlock Text="{Binding BusyTitle}" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" />
         <TextBlock Text="{Binding Status}" TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource MutedBrush}" Margin="0,14,0,22" />
-        <ProgressBar Value="{Binding OperationProgressPercent, Mode=OneWay, TargetNullValue=0}" IsIndeterminate="False" AutomationProperties.Name="Scan progress" />
-        <TextBlock Text="The main window will open when scanning finishes." TextAlignment="Center" Foreground="{DynamicResource MutedBrush}" Margin="0,22,0,8" />
+        <TextBlock Text="The main window opens when the enchantment origins are found." TextAlignment="Center" Foreground="{DynamicResource MutedBrush}" Margin="0,22,0,8" />
     </StackPanel>
 </Window>

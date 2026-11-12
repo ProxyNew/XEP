@@ -7,7 +7,7 @@ namespace XEnchantmentPatcher;
 
 public static partial class PatcherEngine
 {
-    private sealed partial class Catalog
+    internal sealed partial class Catalog
     {
         private Dictionary<FormKey, ILeveledItemGetter> planningLists = [];
         public required IReadOnlyDictionary<FormKey, ILeveledItemGetter> Lists
@@ -73,14 +73,14 @@ public static partial class PatcherEngine
     // A pass owns these counts. Collection/topology mutations update only affected
     // contributions; capturing a budget retains persistent roots rather than walking
     // all preceding plans. Physical multiplicity is distinct from output deduplication.
-    private sealed class PlanningCapacity
+    internal sealed class PlanningCapacity
     {
         private readonly Catalog catalog;
-        private enum Kind { Plan, Edge, Runtime }
+        internal enum Kind { Plan, Edge, Runtime }
         // Static occurrences are also keyed by entry level, so each target keeps the
         // level multiset its capacity reservation needs; positions still count once.
-        private readonly record struct GroupKey(Kind Kind, FormKey Parent, FormKey Child = default, short Level = 0);
-        private sealed class Contribution(int count, FormKey[] targets, HashSet<FormKey> dependencies)
+        internal readonly record struct GroupKey(Kind Kind, FormKey Parent, FormKey Child = default, short Level = 0);
+        internal sealed class Contribution(int count, FormKey[] targets, HashSet<FormKey> dependencies)
         {
             public int Count = count;
             public readonly FormKey[] Targets = targets;
@@ -199,7 +199,7 @@ public static partial class PatcherEngine
                 if (MaterialContents(pair.Key, catalog) == target) return MaterialContents(pair.Value, catalog);
             return target;
         }
-        private Contribution Project(GroupKey key)
+        internal Contribution Project(GroupKey key)
         {
             var parent = key.Kind == Kind.Plan ? MaterialContents(key.Parent, catalog) : key.Parent;
             var dependencies = new HashSet<FormKey> { key.Parent, parent };
@@ -307,7 +307,7 @@ public static partial class PatcherEngine
     // capture interval. An absent key reads as default, as a missing entry did.
     private sealed class EpochTable<T>
     {
-        private sealed class Entry(int epoch, T value)
+        internal sealed class Entry(int epoch, T value)
         {
             public int Epoch = epoch;
             public T Value = value;

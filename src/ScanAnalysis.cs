@@ -105,12 +105,20 @@ public static partial class PatcherEngine
                 AuthorDefaults.CopyBack(effective, settings);
                 return result;
             }
+            catch (Exception ex) when (Named(ex) is { } known) { throw known; }
             catch (Exception ex) when (mods is not null && UnreadableRecord(mods, ex) is { } named)
             {
                 throw new UnreadableRecordException($"{named} cannot be read: {ex.GetBaseException().Message}\n\n"
                     + "Repair the record in xEdit, or report it to the author of that plugin.", ex);
             }
         }
+
+        // A stop at a stand-in for an unreadable record, also from inside a parallel pass, or a
+        // pass that read its group directly and failed with the stand-in's own message.
+        private UnreadableRecordException? Named(Exception ex) => Thrown(ex) ?? winners?.Values.Select(w => (w.Record as UnreadableStandIn)?.Error)
+            .FirstOrDefault(e => e is not null && ex.ToString() is var text && text.Contains("BinaryOverlay") && text.Contains(e.InnerException!.GetBaseException().Message));
+        private static UnreadableRecordException? Thrown(Exception ex) => ex as UnreadableRecordException
+            ?? (ex is AggregateException all ? all.InnerExceptions.Select(Thrown).FirstOrDefault(e => e is not null) : ex.InnerException is { } inner ? Thrown(inner) : null);
 
         private void Analyse(AppSettings settings)
         {

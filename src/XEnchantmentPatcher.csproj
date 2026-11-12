@@ -11,7 +11,7 @@
     <CetCompat>false</CetCompat>
     <AssemblyName>XEnchantmentPatcher</AssemblyName>
     <RootNamespace>XEnchantmentPatcher</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <ApplicationIcon>Assets\iron-helmet-fire.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

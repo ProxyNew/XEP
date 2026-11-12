@@ -18,7 +18,7 @@ public static partial class PatcherEngine
     // the record requires. It throws when the bytes cannot be had: a Mutagen that moved the field.
     internal static HashSet<FormKey> RawLinks(ISkyrimMajorRecordGetter record, ModKey plugin, IReadOnlyList<ISkyrimModGetter> mods)
     {
-        var data = (ReadOnlyMemorySlice<byte>)OverlayRecordData!.GetValue(record)!;
+        var data = record is UnreadableStandIn standIn ? standIn.Data : (ReadOnlyMemorySlice<byte>)OverlayRecordData!.GetValue(record)!;
         var masters = mods.First(m => m.ModKey == plugin).ModHeader.MasterReferences;
         var keys = new HashSet<FormKey>();
         for (var span = data.Span; span.Length >= 4; span = span[1..])

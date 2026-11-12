@@ -32,8 +32,8 @@ public static partial class PatcherEngine
         Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(Enumerable.Range(0, records.Length),
             System.Collections.Concurrent.EnumerablePartitionerOptions.NoBuffering),
             new ParallelOptions { MaxDegreeOfParallelism = Math.Min(8, Math.Max(1, Environment.ProcessorCount)) },
-            unit => records[unit] = ((IMajorRecordGetterEnumerable)TopLevelGroups[unit % TopLevelGroups.Length].GetValue(loaded[unit / TopLevelGroups.Length])!)
-                .EnumerateMajorRecords().OfType<ISkyrimMajorRecordGetter>().Select(record => (record.FormKey, record, editorIds is null ? null : record.EditorID)).ToArray());
+            unit => records[unit] = ReadGroup((IMajorRecordGetterEnumerable)TopLevelGroups[unit % TopLevelGroups.Length].GetValue(loaded[unit / TopLevelGroups.Length])!,
+                loaded[unit / TopLevelGroups.Length].ModKey, editorIds is not null));
         var result = new Dictionary<FormKey, (ISkyrimMajorRecordGetter, ModKey)>();
         for (var unit = 0; unit < records.Length; unit++)
             foreach (var record in records[unit])
@@ -43,6 +43,27 @@ public static partial class PatcherEngine
             }
         // A later deletion or VMAD removal must remain the winner.
         return result;
+    }
+
+    // Plugins the game loads can hold records Mutagen cannot build (counts that disagree with
+    // their lists). Such a group is read again record by record, and an unreadable record wins
+    // as a stand-in (UnreadableStandIn): passes that guard their reads fall back to its raw links,
+    // the others stop at it with the record named. A failure in nested records still stops here.
+    private static (FormKey Key, ISkyrimMajorRecordGetter Record, string? EditorId)[] ReadGroup(IMajorRecordGetterEnumerable group, ModKey plugin, bool ids)
+    {
+        static IEnumerable<(FormKey, ISkyrimMajorRecordGetter, string?)> Read(IEnumerable<IMajorRecordGetter> records, bool ids)
+            => records.OfType<ISkyrimMajorRecordGetter>().Select(record => (record.FormKey, record, ids ? record.EditorID : null));
+        try { return Read(group.EnumerateMajorRecords(), ids).ToArray(); }
+        catch (Exception) when (group is IGroupGetter cache)
+        {
+            return cache.FormKeys.SelectMany(key =>
+            {
+                IMajorRecordGetter record;
+                try { record = cache[key]; }
+                catch (Exception ex) { record = UnreadableStandIn.Create(cache, key, plugin, ex); return Read([record], ids); }
+                return Read([record, .. record.EnumerateMajorRecords()], ids);
+            }).ToArray();
+        }
     }
 
     // This contract models the canonical native local-ID lookup as returning

@@ -2239,10 +2239,12 @@ public static partial class PatcherEngine
         var references = new FormKey[checks.Count][];
             ParallelInOrder(checks.Count, i => references[i] = checks[i].EnumerateFormLinks().Select(l => l.FormKey).ToArray());
         enumerationTiming?.Dispose();
-        // The engine creates the player reference whenever its master loads; no plugin
-        // stores it, so it must not force a nested traversal of every source.
-        var playerPresent = mods.Any(m => m.ModKey == PlayerReference.ModKey);
-        var missing = ReferenceKeyIndex.FindMissing(references.SelectMany(r => r).Where(k => !playerPresent || k != PlayerReference), mods, checks);
+        // Skyrim.esm IDs below 0x800 are the engine's reserved range: the executable creates
+        // forms such as the player reference (000014) and NullTextureSet (000028) that no
+        // plugin stores, and copied records may link them.
+        var enginePresent = mods.Any(m => m.ModKey == PlayerReference.ModKey);
+        var missing = ReferenceKeyIndex.FindMissing(references.SelectMany(r => r)
+            .Where(k => !enginePresent || k.ModKey != PlayerReference.ModKey || k.ID >= 0x800), mods, checks);
         using var resolutionTiming = PhaseTiming.Measure("validation.reference-errors");
         for (var i = 0; i < checks.Count; i++)
         {
